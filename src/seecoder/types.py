@@ -12,12 +12,28 @@ class RunState(StrEnum):
     MODEL_REQUEST = "model_request"
     TOOL_DISPATCH = "tool_dispatch"
     FINAL = "final"
+    PLAN_PROPOSED = "plan_proposed"
+    AWAITING_APPROVAL = "awaiting_approval"
     STOP_MAX_STEPS = "stop_max_steps"
     STOP_TOOL_ERROR_LIMIT = "stop_tool_error_limit"
     STOP_CONTEXT_BUDGET = "stop_context_budget"
     FAILED_MODEL = "failed_model"
     FAILED_PROTOCOL = "failed_protocol"
     CANCELLED = "cancelled"
+
+
+class Mode(StrEnum):
+    """How the agent treats tool execution and human oversight."""
+
+    AUTO = "auto"  # run allowed tools without interruption
+    PLAN = "plan"  # inspect only; propose mutations as a plan for review
+    ASK = "ask"    # pause for per-action approval on mutating tools
+
+
+class ApprovalDecision(StrEnum):
+    ALLOW = "allow"
+    DENY = "deny"
+    NEEDS_APPROVAL = "needs_approval"
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +57,33 @@ class ChatMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class Usage:
+    """Token usage for one model response (or an accumulated total)."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+    def plus(self, other: Usage) -> Usage:
+        if other is None:
+            return self
+        return Usage(
+            self.prompt_tokens + other.prompt_tokens,
+            self.completion_tokens + other.completion_tokens,
+            self.total_tokens + other.total_tokens,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PlanStep:
+    """One proposed mutation captured while the agent is in plan mode."""
+
+    tool: str
+    arguments: dict[str, Any]
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
 class ModelResponse:
     """One model turn after provider-specific output has been normalized."""
 
@@ -48,6 +91,7 @@ class ModelResponse:
     tool_calls: tuple[ToolCall, ...] = ()
     model: str | None = None
     reasoning_content: str | None = None
+    usage: Usage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,3 +136,6 @@ class RunOutcome:
     final_text: str
     steps: int
     trace_path: str | None = None
+    plan: tuple[PlanStep, ...] = ()
+    usage: Usage | None = None
+    mode: Mode = Mode.AUTO

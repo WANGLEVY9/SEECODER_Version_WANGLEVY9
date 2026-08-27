@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from seecoder.approval import Policy, is_read_only
 from seecoder.config import Settings
 from seecoder.context import ContextBudgetExceeded, ContextManager
 from seecoder.model_client import ModelClient, ModelClientError
@@ -23,7 +24,17 @@ from seecoder.tools import (
     WriteFileTool,
 )
 from seecoder.trace import NullTraceWriter, TraceWriter
-from seecoder.types import ChatMessage, RunOutcome, RunState, ToolCall, ToolResult
+from seecoder.types import (
+    ApprovalDecision,
+    ChatMessage,
+    Mode,
+    PlanStep,
+    RunOutcome,
+    RunState,
+    ToolCall,
+    ToolResult,
+    Usage,
+)
 
 
 DEFAULT_SYSTEM_PROMPT = """You are SEECODER, an autonomous but bounded coding agent.
@@ -32,7 +43,29 @@ and use run_command to validate your work when feasible. Treat non-zero command 
 evidence to investigate, not as success. Never claim a task is complete unless you have evidence.
 When finished, provide a concise summary of changes, validation, and any remaining uncertainty."""
 
+Approver = Callable[[ToolCall], bool]
 EventSink = Callable[[str, dict[str, Any]], None]
+
+
+def _auto_allow(call: ToolCall) -> bool:
+    return True
+
+
+def _plan_description(call: ToolCall) -> str:
+    try:
+        arguments = json.loads(call.arguments)
+    except json.JSONDecodeError:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+    if call.name == "write_file":
+        return f"write_file {arguments.get('path', '?')} ({len(str(arguments.get('content', '')))} chars)"
+    if call.name == "apply_patch":
+        return f"apply_patch {arguments.get('path', '?')}"
+    if call.name == "run_command":
+        argv = arguments.get("argv") or arguments.get("command", "?")
+        return f"run_command {argv}"
+    return f"{call.name} {json.dumps(arguments, ensure_ascii=False)[:200]}"
 
 
 class AgentRunner:
@@ -47,6 +80,8 @@ class AgentRunner:
         trace: TraceWriter | NullTraceWriter | None = None,
         event_sink: EventSink | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        mode: Mode = Mode.AUTO,
+        approver: Approver | None = None,
     ) -> None:
         self.settings = settings
         self.model_client = model_client
@@ -55,6 +90,9 @@ class AgentRunner:
         self.trace = trace or NullTraceWriter()
         self.event_sink = event_sink
         self.system_prompt = system_prompt
+        self.mode = mode
+        self.policy = Policy(mode)
+        self.approver = approver or _auto_allow
 
     @classmethod
     def for_workspace(
@@ -65,6 +103,8 @@ class AgentRunner:
         workspace: Path,
         trace: TraceWriter | NullTraceWriter | None = None,
         event_sink: EventSink | None = None,
+        mode: Mode = Mode.AUTO,
+        approver: Approver | None = None,
     ) -> AgentRunner:
         boundary = WorkspaceBoundary(workspace)
         tools = ToolRegistry.create(
@@ -90,16 +130,33 @@ class AgentRunner:
             tools=tools,
             trace=trace,
             event_sink=event_sink,
+            mode=mode,
+            approver=approver,
         )
 
     def run(self, task: str) -> RunOutcome:
+        """Run a single task from a fresh system+user conversation."""
+
         if not task.strip():
             raise ValueError("Task must be a non-empty string")
         messages = [ChatMessage(role="system", content=self.system_prompt), ChatMessage(role="user", content=task)]
-        self._record("run_started", {"task": task, "max_steps": self.settings.max_steps})
+        return self._run(messages)
+
+    def run_messages(self, messages: list[ChatMessage]) -> RunOutcome:
+        """Continue an existing conversation (system history retained by the caller)."""
+
+        return self._run(messages)
+
+    def _run(self, messages: list[ChatMessage]) -> RunOutcome:
+        self._record("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps})
+        self._emit("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps})
+        steps = 0
         consecutive_tool_errors = 0
+        plan_steps: list[PlanStep] = []
+        total_usage = Usage(0, 0, 0)
         try:
             for step in range(1, self.settings.max_steps + 1):
+                steps = step
                 self._record("model_request", {"step": step, "message_count": len(messages)})
                 self._emit("model_request", {"step": step})
                 try:
@@ -107,18 +164,27 @@ class AgentRunner:
                         messages, preserve_complete_history=self.settings.thinking_mode == "enabled"
                     )
                 except ContextBudgetExceeded as error:
-                    return self._finish(RunState.STOP_CONTEXT_BUDGET, str(error), step - 1)
+                    return self._finish(RunState.STOP_CONTEXT_BUDGET, str(error), steps - 1)
                 try:
                     response = self.model_client.complete(prepared_messages, self.tools.schemas())
                 except ModelClientError as error:
                     final_text = f"Model request failed after bounded retries: {error}"
-                    return self._finish(RunState.FAILED_MODEL, final_text, step - 1)
+                    return self._finish(RunState.FAILED_MODEL, final_text, steps - 1)
+
+                if response.usage is not None:
+                    total_usage = total_usage.plus(response.usage)
+                    self._record("usage", {"prompt_tokens": response.usage.prompt_tokens,
+                                           "completion_tokens": response.usage.completion_tokens,
+                                           "total_tokens": response.usage.total_tokens})
+                    self._emit("usage", {"total_tokens": total_usage.total_tokens,
+                                         "prompt_tokens": total_usage.prompt_tokens,
+                                         "completion_tokens": total_usage.completion_tokens})
 
                 if self.settings.thinking_mode == "enabled" and response.tool_calls and not response.reasoning_content:
                     return self._finish(
                         RunState.FAILED_PROTOCOL,
                         "Thinking-mode tool call omitted required reasoning_content; refusing an invalid continuation.",
-                        step,
+                        steps,
                     )
 
                 assistant_message = ChatMessage(
@@ -136,22 +202,32 @@ class AgentRunner:
                         "content": response.content,
                         "tool_calls": [self._call_data(call) for call in response.tool_calls],
                         "reasoning": self._reasoning_metadata(response.reasoning_content),
+                        "usage": {"total_tokens": total_usage.total_tokens},
                     },
                 )
                 if not response.tool_calls:
+                    if self.mode == Mode.PLAN and plan_steps:
+                        return self._finish(
+                            RunState.PLAN_PROPOSED,
+                            response.content or "The agent inspected the workspace and proposed a plan.",
+                            steps,
+                            plan=plan_steps,
+                            usage=total_usage,
+                        )
                     final_text = response.content or "Model ended without a final textual response."
-                    return self._finish(RunState.FINAL, final_text, step)
+                    return self._finish(RunState.FINAL, final_text, steps, usage=total_usage)
 
                 self._emit("tool_dispatch", {"step": step, "count": len(response.tool_calls)})
                 for call in response.tool_calls:
-                    result = self.tools.dispatch(call)
+                    result = self._dispatch_with_policy(call, plan_steps)
                     self._record(
                         "tool_result",
                         {"step": step, "call": self._call_data(call), "result": result.as_dict()},
                     )
                     self._emit(
                         "tool_result",
-                        {"name": call.name, "ok": result.ok, "error": result.error.kind if result.error else None},
+                        {"name": call.name, "ok": result.ok,
+                         "error": result.error.kind if result.error else None},
                     )
                     messages.append(
                         ChatMessage(
@@ -160,30 +236,74 @@ class AgentRunner:
                             content=json.dumps(result.as_dict(), ensure_ascii=False),
                         )
                     )
-                    consecutive_tool_errors = consecutive_tool_errors + 1 if not result.ok else 0
-                    if consecutive_tool_errors >= self.settings.max_consecutive_tool_errors:
-                        return self._finish(
-                            RunState.STOP_TOOL_ERROR_LIMIT,
-                            "Stopped after repeated local tool errors; inspect the trace for details.",
-                            step,
-                        )
+                    if not result.ok and not self._is_plan_notice(result):
+                        consecutive_tool_errors += 1
+                        if consecutive_tool_errors >= self.settings.max_consecutive_tool_errors:
+                            return self._finish(
+                                RunState.STOP_TOOL_ERROR_LIMIT,
+                                "Stopped after repeated local tool errors; inspect the trace for details.",
+                                steps,
+                                usage=total_usage,
+                            )
             return self._finish(
                 RunState.STOP_MAX_STEPS,
                 f"Stopped after reaching the configured maximum of {self.settings.max_steps} model steps.",
                 self.settings.max_steps,
+                usage=total_usage,
             )
         except KeyboardInterrupt:
-            return self._finish(RunState.CANCELLED, "Run cancelled by user (Ctrl+C).", 0)
+            return self._finish(RunState.CANCELLED, "Run cancelled by user (Ctrl+C).", steps, usage=total_usage)
 
-    def _finish(self, state: RunState, final_text: str, steps: int) -> RunOutcome:
-        self._record("run_finished", {"state": state, "steps": steps, "final_text": final_text})
-        self._emit("run_finished", {"state": state, "steps": steps})
-        return RunOutcome(
+    def _dispatch_with_policy(
+        self,
+        call: ToolCall,
+        plan_steps: list[PlanStep],
+    ) -> ToolResult:
+        if self.mode == Mode.PLAN and not is_read_only(call.name):
+            plan_steps.append(PlanStep(tool=call.name, arguments=_safe_arguments(call),
+                                       description=_plan_description(call)))
+            self._emit("plan_proposal", {"name": call.name,
+                                         "arguments": _safe_arguments(call),
+                                         "description": _plan_description(call)})
+            return ToolResult.failure(
+                "PlanMode",
+                "Plan mode: mutations are not executed. Describe your plan in text for review.",
+            )
+        decision = self.policy.decide(call.name)
+        if decision == ApprovalDecision.NEEDS_APPROVAL:
+            self._emit("approval_request", {"name": call.name, "arguments": _safe_arguments(call)})
+            self._record("approval_request", {"call": self._call_data(call)})
+            if self.approver(call):
+                return self.tools.dispatch(call)
+            return ToolResult.failure("DeniedByUser", "User denied this action in ask mode.")
+        return self.tools.dispatch(call)
+
+    @staticmethod
+    def _is_plan_notice(result: ToolResult) -> bool:
+        return result.error is not None and result.error.kind == "PlanMode"
+
+    def _finish(
+        self,
+        state: RunState,
+        final_text: str,
+        steps: int,
+        *,
+        plan: list[PlanStep] | None = None,
+        usage: Usage | None = None,
+    ) -> RunOutcome:
+        outcome = RunOutcome(
             state=state,
             final_text=final_text,
             steps=steps,
             trace_path=str(self.trace.path) if self.trace.path else None,
+            plan=tuple(plan or ()),
+            usage=usage or Usage(0, 0, 0),
+            mode=self.mode,
         )
+        self._record("run_finished", {"state": state, "steps": steps, "final_text": final_text,
+                                      "usage_total_tokens": outcome.usage.total_tokens})
+        self._emit("run_finished", {"state": state, "steps": steps})
+        return outcome
 
     def _record(self, event: str, data: dict[str, Any]) -> None:
         self.trace.record(event, data)
@@ -204,3 +324,11 @@ class AgentRunner:
             "characters": len(reasoning_content),
             "sha256": hashlib.sha256(reasoning_content.encode("utf-8")).hexdigest(),
         }
+
+
+def _safe_arguments(call: ToolCall) -> dict[str, Any]:
+    try:
+        parsed = json.loads(call.arguments)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}

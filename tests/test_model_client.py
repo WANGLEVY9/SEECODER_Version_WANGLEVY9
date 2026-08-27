@@ -10,6 +10,7 @@ from seecoder.model_client import (
     _as_openai_message,
     _chat_completion_request,
     _reasoning_content_from_provider_message,
+    _usage_from_response,
 )
 from seecoder.types import ChatMessage, ModelResponse, ToolCall
 
@@ -80,3 +81,17 @@ class ModelClientTests(unittest.TestCase):
     def test_provider_default_does_not_send_deepseek_specific_parameters(self) -> None:
         request = _chat_completion_request(Settings(api_key="test", model="generic"), [], [])
         self.assertNotIn("extra_body", request)
+
+    def test_usage_is_extracted_from_provider_response(self) -> None:
+        class ProviderUsage:
+            prompt_tokens = 12
+            completion_tokens = 8
+            total_tokens = 20
+
+        class ProviderResponse:
+            usage = ProviderUsage()
+
+        usage = _usage_from_response(ProviderResponse())
+        self.assertEqual(usage.prompt_tokens, 12)
+        self.assertEqual(usage.completion_tokens, 8)
+        self.assertEqual(usage.total_tokens, 20)

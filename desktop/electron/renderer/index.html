@@ -29,11 +29,12 @@
           <button id="top-workspace" class="workspace-button no-drag">⌁ <span>选择工作区</span><small>⌄</small></button>
         </header>
         <div id="conversation" class="conversation" aria-live="polite"></div>
+        <div id="approval-banner" class="approval-banner" hidden><span id="approval-text">等待批准</span><button id="approve-btn" class="approve-button">批准</button><button id="deny-btn" class="deny-button">拒绝</button></div>
         <section class="composer-wrap">
           <div class="composer">
             <textarea id="task-input" rows="3" placeholder="描述一个真实的编程任务…"></textarea>
             <div class="composer-footer">
-              <div class="composer-tools"><button id="composer-workspace" class="subtle-button">＋</button><span>本地 · 受限执行模式</span></div>
+              <div class="composer-tools"><button id="composer-workspace" class="subtle-button">＋</button><select id="mode-select" class="mode-select" title="工作模式"><option value="ask">询问</option><option value="plan">计划</option><option value="auto">自动</option></select><span>本地 · 受限执行</span></div>
               <div class="send-controls"><span class="shortcut">⌘ ↵</span><button id="stop-run" class="stop-button" disabled>停止</button><button id="send-task" class="send-button" aria-label="发送任务">↑</button></div>
             </div>
           </div>
@@ -46,6 +47,7 @@
         <div class="activity-content">
           <div class="activity-heading"><div><span class="eyebrow">执行轨迹</span><h2>运行状态</h2></div><span id="state-badge" class="state-badge">就绪</span></div>
           <p class="activity-description">每一步都来自自研 AgentRunner 的本地 JSONL 事件，不使用托管执行服务。</p>
+          <div id="cost-badge" class="cost-badge">tokens 0</div>
           <div id="activity-list" class="activity-list"></div>
           <button id="about-button" class="about-button">设计与安全说明 <span>→</span></button>
         </div>
@@ -56,7 +58,7 @@
       <span class="eyebrow">SEECODER 桌面端</span>
       <h2>界面与 Agent 内核分离</h2>
       <p>Electron 仅负责本地桌面渲染和交互。它通过受控的本机子进程调用现有 CLI；上下文、工具 schema、文件读写、命令执行、错误处理和停止条件仍全部由 Python 自研实现。</p>
-      <p>界面不读取、不显示、不持久化 API key，也不会启用 <code>--host-shell</code>。</p>
+      <p>界面不读取、不显示、不持久化 API key，也不会启用 <code>--host-shell</code>。可在 自动 / 计划 / 询问 三种模式下运行：计划模式先给出方案再批准执行，询问模式在每一步写文件或运行命令前征求你的同意。</p>
     </dialog>
     <script src="renderer.js"></script>
   </body>

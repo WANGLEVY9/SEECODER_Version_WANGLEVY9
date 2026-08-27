@@ -86,12 +86,12 @@ ipcMain.handle("seecoder:choose-workspace", async () => {
 
 ipcMain.handle("seecoder:start-run", (_event, payload) => {
   if (activeRun && activeRun.child.exitCode === null) throw new Error("已有任务正在运行，请先停止或等待它完成。");
-  const { command, args } = buildBackendInvocation(findUv(), payload?.task, payload?.workspace);
+  const { command, args } = buildBackendInvocation(findUv(), payload?.task, payload?.workspace, payload?.mode);
   const child = spawn(command, args, {
     cwd: projectRoot,
     detached: process.platform !== "win32",
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
   activeRun = { child };
@@ -104,6 +104,13 @@ ipcMain.handle("seecoder:start-run", (_event, payload) => {
     activeRun = undefined;
   });
   return { started: true };
+});
+
+ipcMain.handle("seecoder:approve", (_event, decision) => {
+  if (!activeRun || !activeRun.child.stdin) return { handled: false };
+  const line = decision === true || decision === "approve" ? "y\n" : "n\n";
+  activeRun.child.stdin.write(line);
+  return { handled: true };
 });
 
 ipcMain.handle("seecoder:stop-run", () => ({ stopped: stopActiveRun() }));

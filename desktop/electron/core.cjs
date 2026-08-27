@@ -1,13 +1,14 @@
 "use strict";
 
-function buildBackendInvocation(uv, task, workspace) {
+function buildBackendInvocation(uv, task, workspace, mode) {
   if (typeof uv !== "string" || !uv.trim()) throw new Error("未找到 uv；请安装 uv 或设置 SEECODER_UV。");
   if (typeof task !== "string" || !task.trim()) throw new Error("任务不能为空。");
   if (typeof workspace !== "string" || !workspace.trim()) throw new Error("请先选择一个已存在的工作区。");
-  return {
-    command: uv,
-    args: ["run", "seecoder", "run", task.trim(), "--workspace", workspace, "--event-json"],
-  };
+  const allowed = { auto: "auto", plan: "plan", ask: "ask" };
+  const selected = allowed[mode] || "auto";
+  const args = ["run", "seecoder", "run", task.trim(), "--workspace", workspace, "--event-json"];
+  if (selected !== "auto") args.push("--mode", selected);
+  return { command: uv, args };
 }
 
 function parseEventLine(line) {

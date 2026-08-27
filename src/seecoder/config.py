@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from seecoder.types import Mode
+
 
 class ConfigError(ValueError):
     """Raised when required runtime configuration is missing or unsafe."""
@@ -59,6 +61,7 @@ class Settings:
     execution_mode: str = "restricted"
     thinking_mode: str = "provider_default"
     reasoning_effort: str = "high"
+    mode: Mode = Mode.AUTO
 
     @classmethod
     def from_environment(
@@ -102,6 +105,10 @@ class Settings:
         if reasoning_effort not in {"low", "high", "max"}:
             raise ConfigError("SEECODER_REASONING_EFFORT must be low, high, or max")
 
+        mode_name = value("SEECODER_MODE", "auto") or "auto"
+        if mode_name not in {"auto", "plan", "ask"}:
+            raise ConfigError("SEECODER_MODE must be auto, plan, or ask")
+
         return cls(
             api_key=api_key,
             model=model,
@@ -111,4 +118,5 @@ class Settings:
             execution_mode=configured_execution_mode,
             thinking_mode=thinking_mode,
             reasoning_effort=reasoning_effort,
+            mode=Mode(mode_name),
         )

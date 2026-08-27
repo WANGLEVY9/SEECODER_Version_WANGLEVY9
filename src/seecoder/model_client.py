@@ -6,7 +6,7 @@ import time
 from typing import Any, Protocol
 
 from seecoder.config import Settings
-from seecoder.types import ChatMessage, ModelResponse, ToolCall
+from seecoder.types import ChatMessage, ModelResponse, ToolCall, Usage
 
 
 class ModelClientError(RuntimeError):
@@ -55,6 +55,21 @@ def _chat_completion_request(
     if settings.thinking_mode == "enabled":
         request["reasoning_effort"] = settings.reasoning_effort
     return request
+
+
+def _usage_from_response(response: Any) -> Usage | None:
+    """Read token usage from a provider response without making it mandatory."""
+
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    get = lambda name: getattr(usage, name, 0) or 0
+    prompt = get("prompt_tokens")
+    completion = get("completion_tokens")
+    total = get("total_tokens") or (prompt + completion)
+    if prompt == 0 and completion == 0 and total == 0:
+        return None
+    return Usage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
 
 
 def _reasoning_content_from_provider_message(message: Any) -> str | None:
@@ -115,6 +130,7 @@ class OpenAICompatibleClient:
                 tool_calls=calls,
                 model=response.model,
                 reasoning_content=reasoning_content,
+                usage=_usage_from_response(response),
             )
         except ModelClientError:
             raise
