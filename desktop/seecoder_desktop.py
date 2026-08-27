@@ -31,19 +31,18 @@ from tkinter import filedialog, messagebox, scrolledtext
 
 APP_NAME = "SEECODER Desktop"
 STATE_VERSION = 1
-# The macOS system Tk bundled with Xcode ignores custom foreground colours in
-# dark appearance mode. A high-contrast light palette keeps every native text
-# widget readable without adding a third-party GUI runtime.
-BACKGROUND = "#f6f8fb"
-SIDEBAR = "#e9eef5"
-PANEL = "#ffffff"
-PANEL_ACTIVE = "#dce6f2"
-TEXT = "#18212b"
-MUTED = "#526172"
-ACCENT = "#2563eb"
-SUCCESS = "#087f5b"
-WARNING = "#9a5a00"
-ERROR = "#c92a3d"
+# Warm, low-contrast colors make the local tool feel calm without copying an
+# external product's brand. Tk 9 renders this palette reliably on macOS.
+BACKGROUND = "#fbf8f3"
+SIDEBAR = "#f1eee9"
+PANEL = "#fffdf9"
+PANEL_ACTIVE = "#e7e1db"
+TEXT = "#373547"
+MUTED = "#777488"
+ACCENT = "#625b8f"
+SUCCESS = "#2b7a67"
+WARNING = "#a06b23"
+ERROR = "#bf5360"
 
 
 def utc_now() -> str:
@@ -156,6 +155,7 @@ class DesktopApp:
         self._ensure_session()
         self._render_session_list()
         self._render_current_session()
+        self._append_activity("已准备就绪：等待本地任务")
         self.root.after(60, self._poll_process_events)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<Command-Return>", self._send_task)
@@ -194,22 +194,22 @@ class DesktopApp:
             state=state,
             background=background,
             foreground=foreground,
-            activebackground="#1d4ed8" if accent else PANEL_ACTIVE,
+            activebackground="#514a7b" if accent else PANEL_ACTIVE,
             activeforeground=foreground,
             disabledforeground=MUTED,
-            borderwidth=1,
+            borderwidth=0,
             highlightthickness=0,
             relief="flat",
             padx=12,
             pady=8,
-            font=("Helvetica", 12),
+            font=("Helvetica Neue", 12),
         )
 
     def _build_sidebar(self, parent: tk.Frame) -> None:
-        tk.Label(parent, text="SEECODER", background=SIDEBAR, foreground=TEXT, font=("Helvetica", 18, "bold")).pack(
+        tk.Label(parent, text="SEECODER", background=SIDEBAR, foreground=TEXT, font=("Helvetica Neue", 18, "bold")).pack(
             anchor="w", padx=18, pady=(20, 4)
         )
-        tk.Label(parent, text="本地编程智能体", background=SIDEBAR, foreground=MUTED, font=("Helvetica", 11)).pack(
+        tk.Label(parent, text="本地编程智能体 · Local Agent", background=SIDEBAR, foreground=MUTED, font=("Helvetica Neue", 11)).pack(
             anchor="w", padx=18, pady=(0, 20)
         )
         self._button(parent, "＋ 新对话", self._new_session).pack(
@@ -218,7 +218,7 @@ class DesktopApp:
         self._button(parent, "⌂ 选择工作区", self._choose_workspace).pack(
             fill="x", padx=14, pady=4
         )
-        tk.Label(parent, text="本地会话", background=SIDEBAR, foreground=MUTED, font=("Helvetica", 11)).pack(
+        tk.Label(parent, text="最近会话", background=SIDEBAR, foreground=MUTED, font=("Helvetica Neue", 11)).pack(
             anchor="w", padx=18, pady=(25, 7)
         )
         self.session_list = tk.Listbox(
@@ -230,7 +230,7 @@ class DesktopApp:
             highlightthickness=0,
             borderwidth=0,
             activestyle="none",
-            font=("Helvetica", 12),
+            font=("Helvetica Neue", 12),
         )
         self.session_list.pack(fill="both", expand=True, padx=10, pady=(0, 12))
         self.session_list.bind("<<ListboxSelect>>", self._select_session)
@@ -239,7 +239,7 @@ class DesktopApp:
             text="仅本地保存\n不保存 API key",
             background=SIDEBAR,
             foreground=MUTED,
-            font=("Helvetica", 10),
+            font=("Helvetica Neue", 10),
             justify="left",
         ).pack(anchor="w", padx=18, pady=(0, 18))
 
@@ -247,9 +247,9 @@ class DesktopApp:
         header = tk.Frame(parent, background=BACKGROUND)
         header.grid(row=0, column=0, sticky="ew", padx=24, pady=(18, 10))
         header.columnconfigure(0, weight=1)
-        self.title_label = tk.Label(header, text="新对话", background=BACKGROUND, foreground=TEXT, font=("Helvetica", 16, "bold"))
+        self.title_label = tk.Label(header, text="新对话", background=BACKGROUND, foreground=TEXT, font=("Helvetica Neue", 16, "bold"))
         self.title_label.grid(row=0, column=0, sticky="w")
-        self.workspace_label = tk.Label(header, text="", background=BACKGROUND, foreground=MUTED, font=("Helvetica", 10))
+        self.workspace_label = tk.Label(header, text="", background=BACKGROUND, foreground=MUTED, font=("Helvetica Neue", 10))
         self.workspace_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._button(header, "打开工作区", self._choose_workspace).grid(
             row=0, column=1, rowspan=2, sticky="e"
@@ -262,17 +262,23 @@ class DesktopApp:
             insertbackground=TEXT,
             relief="flat",
             borderwidth=0,
+            highlightthickness=0,
             padx=28,
             pady=14,
             wrap="word",
-            font=("Helvetica", 13),
+            font=("Helvetica Neue", 13),
             state="disabled",
         )
+        self.transcript.frame.configure(background=BACKGROUND, borderwidth=0, relief="flat")
+        self.transcript.vbar.configure(width=8, borderwidth=0, highlightthickness=0, relief="flat")
         self.transcript.grid(row=1, column=0, sticky="nsew", padx=6)
-        self.transcript.tag_configure("user_label", foreground=ACCENT, font=("Helvetica", 11, "bold"))
-        self.transcript.tag_configure("agent_label", foreground=SUCCESS, font=("Helvetica", 11, "bold"))
-        self.transcript.tag_configure("system_label", foreground=WARNING, font=("Helvetica", 11, "bold"))
+        self.transcript.tag_configure("user_label", foreground=ACCENT, font=("Helvetica Neue", 11, "bold"))
+        self.transcript.tag_configure("agent_label", foreground=SUCCESS, font=("Helvetica Neue", 11, "bold"))
+        self.transcript.tag_configure("system_label", foreground=WARNING, font=("Helvetica Neue", 11, "bold"))
         self.transcript.tag_configure("body", foreground=TEXT, spacing3=18)
+        self.transcript.tag_configure("empty_title", foreground=TEXT, font=("Helvetica Neue", 22, "bold"), justify="center", spacing1=80)
+        self.transcript.tag_configure("empty_body", foreground=MUTED, font=("Helvetica Neue", 13), justify="center", spacing3=16)
+        self.transcript.tag_configure("empty_hint", foreground=ACCENT, font=("Helvetica Neue", 12, "bold"), justify="center")
 
         composer = tk.Frame(parent, background=PANEL)
         composer.grid(row=2, column=0, sticky="ew", padx=24, pady=(8, 22))
@@ -285,13 +291,14 @@ class DesktopApp:
             insertbackground=TEXT,
             relief="flat",
             borderwidth=0,
+            highlightthickness=0,
             wrap="word",
-            font=("Helvetica", 13),
+            font=("Helvetica Neue", 13),
             padx=14,
             pady=12,
         )
         self.composer.grid(row=0, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
-        self.status_label = tk.Label(composer, text="受限本地执行模式", background=PANEL, foreground=MUTED, font=("Helvetica", 10))
+        self.status_label = tk.Label(composer, text="本地 · 受限执行模式", background=PANEL, foreground=MUTED, font=("Helvetica Neue", 10))
         self.status_label.grid(row=1, column=0, sticky="w", padx=14, pady=(0, 10))
         self.send_button = self._button(composer, "发送", self._send_task, accent=True)
         self.send_button.grid(row=1, column=1, sticky="e", padx=10, pady=(0, 10))
@@ -299,10 +306,10 @@ class DesktopApp:
         self.stop_button.grid(row=1, column=2, sticky="e", padx=(0, 10), pady=(0, 10))
 
     def _build_activity(self, parent: tk.Frame) -> None:
-        tk.Label(parent, text="运行状态", background=PANEL, foreground=TEXT, font=("Helvetica", 14, "bold")).pack(
+        tk.Label(parent, text="运行状态", background=PANEL, foreground=TEXT, font=("Helvetica Neue", 14, "bold")).pack(
             anchor="w", padx=18, pady=(20, 5)
         )
-        tk.Label(parent, text="模型只提出工具意图；\n所有执行均在本地完成。", background=PANEL, foreground=MUTED, font=("Helvetica", 10), justify="left").pack(
+        tk.Label(parent, text="模型仅提出工具意图。\n文件、命令与 Git 均在本地执行。", background=PANEL, foreground=MUTED, font=("Helvetica Neue", 10), justify="left").pack(
             anchor="w", padx=18, pady=(0, 16)
         )
         self.activity_list = tk.Listbox(
@@ -312,7 +319,7 @@ class DesktopApp:
             highlightthickness=0,
             borderwidth=0,
             activestyle="none",
-            font=("Helvetica", 11),
+            font=("Helvetica Neue", 11),
         )
         self.activity_list.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self._button(parent, "设计与安全说明", self._show_about).pack(
@@ -349,12 +356,24 @@ class DesktopApp:
     def _render_current_session(self) -> None:
         session = self._current()
         self.title_label.configure(text=session.get("title", "新对话"))
-        self.workspace_label.configure(text="工作区：" + session.get("workspace", "未选择"))
+        self.workspace_label.configure(text="工作区  ·  " + session.get("workspace", "未选择"))
         self.transcript.configure(state="normal")
         self.transcript.delete("1.0", tk.END)
-        for message in session.get("messages", []):
+        messages = session.get("messages", [])
+        if not messages:
+            self._render_empty_state()
+        for message in messages:
             self._append_transcript(message.get("role", "system"), message.get("content", ""), persist=False)
         self.transcript.configure(state="disabled")
+
+    def _render_empty_state(self) -> None:
+        self.transcript.insert(tk.END, "SEECODER\n", "empty_title")
+        self.transcript.insert(
+            tk.END,
+            "一个由本地工具驱动的编程智能体。\n选择工作区后，描述你希望完成的真实编码任务。\n\n",
+            "empty_body",
+        )
+        self.transcript.insert(tk.END, "⌘ ↵ 发送任务", "empty_hint")
 
     def _append_transcript(self, role: str, content: str, persist: bool = True) -> None:
         labels = {"user": ("你", "user_label"), "assistant": ("SEECODER", "agent_label"), "system": ("本地状态", "system_label")}
@@ -425,6 +444,10 @@ class DesktopApp:
         except (RuntimeError, ValueError) as error:
             messagebox.showerror(APP_NAME, str(error))
             return "break"
+        if not self._current().get("messages"):
+            self.transcript.configure(state="normal")
+            self.transcript.delete("1.0", tk.END)
+            self.transcript.configure(state="disabled")
         self._append_transcript("user", task)
         self.composer.delete("1.0", tk.END)
         self.activity_list.delete(0, tk.END)
@@ -521,7 +544,7 @@ class DesktopApp:
             pass
 
     def _set_ready(self) -> None:
-        self.status_label.configure(text="受限本地执行模式", foreground=MUTED)
+        self.status_label.configure(text="本地 · 受限执行模式", foreground=MUTED)
         self.send_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
 
