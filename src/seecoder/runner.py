@@ -12,6 +12,8 @@ from seecoder.approval import Policy, is_read_only
 from seecoder.config import Settings
 from seecoder.compaction import DEFAULT_KEEP_TURNS
 from seecoder.context import ContextBudgetExceeded, ContextManager, _turns, estimate_message_chars
+from dataclasses import replace
+
 from seecoder.memory import load_memory_block
 from seecoder.model_client import ModelClient, ModelClientError
 from seecoder.tools import (
@@ -20,8 +22,11 @@ from seecoder.tools import (
     ListFilesTool,
     ReadFileTool,
     RunCommandTool,
+    SearchCodeTool,
     SearchFilesTool,
+    SpawnAgentTool,
     ToolRegistry,
+    WebSearchTool,
     WorkspaceBoundary,
     WriteFileTool,
 )
@@ -53,6 +58,28 @@ EventSink = Callable[[str, dict[str, Any]], None]
 
 def _auto_allow(call: ToolCall) -> bool:
     return True
+
+
+def _subagent_factory(settings: Settings, model_client: ModelClient, workspace: Path):
+    """Build a factory that runs a bounded sub-agent without further sub-agent spawning."""
+
+    def factory(name: str, task: str, max_steps: int) -> str:
+        nested_settings = replace(settings, max_steps=max_steps)
+        nested = AgentRunner.for_workspace(
+            settings=nested_settings,
+            model_client=model_client,
+            workspace=workspace,
+            trace=None,
+            event_sink=None,
+            mode=Mode.AUTO,
+            approver=None,
+            enable_subagents=False,
+        )
+        outcome = nested.run(task)
+        text = (outcome.final_text or "").strip()
+        return text or f"[{name}] sub-agent produced no final output."
+
+    return factory
 
 
 def _plan_description(call: ToolCall) -> str:
@@ -117,25 +144,29 @@ class AgentRunner:
         approver: Approver | None = None,
         stream_sink: Callable[[StreamEvent], None] | None = None,
         compactor: Callable[[list[ChatMessage]], str] | None = None,
+        enable_subagents: bool = True,
     ) -> AgentRunner:
         boundary = WorkspaceBoundary(workspace)
-        tools = ToolRegistry.create(
-            [
-                ListFilesTool(boundary),
-                ReadFileTool(boundary),
-                SearchFilesTool(boundary),
-                WriteFileTool(boundary),
-                ApplyPatchTool(boundary),
-                GitDiffTool(boundary),
-                RunCommandTool(
-                    boundary,
-                    default_timeout_s=settings.command_timeout_s,
-                    max_timeout_s=settings.command_max_timeout_s,
-                    allow_dangerous_commands=settings.allow_dangerous_commands,
-                    execution_mode=settings.execution_mode,
-                ),
-            ]
-        )
+        tool_instances: list[Any] = [
+            ListFilesTool(boundary),
+            ReadFileTool(boundary),
+            SearchFilesTool(boundary),
+            SearchCodeTool(boundary),
+            WriteFileTool(boundary),
+            ApplyPatchTool(boundary),
+            GitDiffTool(boundary),
+            RunCommandTool(
+                boundary,
+                default_timeout_s=settings.command_timeout_s,
+                max_timeout_s=settings.command_max_timeout_s,
+                allow_dangerous_commands=settings.allow_dangerous_commands,
+                execution_mode=settings.execution_mode,
+            ),
+            WebSearchTool(),
+        ]
+        if enable_subagents:
+            tool_instances.append(SpawnAgentTool(_subagent_factory(settings, model_client, workspace)))
+        tools = ToolRegistry.create(tool_instances)
         return cls(
             settings=settings,
             model_client=model_client,
@@ -286,8 +317,12 @@ class AgentRunner:
                     return self._finish(RunState.FINAL, final_text, steps, usage=total_usage)
 
                 self._emit("tool_dispatch", {"step": step, "count": len(response.tool_calls)})
-                for call in response.tool_calls:
-                    result = self._dispatch_with_policy(call, plan_steps)
+                calls = response.tool_calls
+                if calls and all(is_read_only(call.name) for call in calls):
+                    results = self._dispatch_parallel(calls)
+                else:
+                    results = [self._dispatch_with_policy(call, plan_steps) for call in calls]
+                for call, result in zip(calls, results):
                     self._record(
                         "tool_result",
                         {"step": step, "call": self._call_data(call), "result": result.as_dict()},
@@ -321,6 +356,17 @@ class AgentRunner:
             )
         except KeyboardInterrupt:
             return self._finish(RunState.CANCELLED, "Run cancelled by user (Ctrl+C).", steps, usage=total_usage)
+
+    def _dispatch_parallel(self, calls: tuple[ToolCall, ...]) -> list[ToolResult]:
+        """Run independent read-only tool calls concurrently, preserving call order."""
+
+        if len(calls) == 1:
+            return [self.tools.dispatch(calls[0])]
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(8, len(calls))) as executor:
+            futures = [executor.submit(self.tools.dispatch, call) for call in calls]
+            return [future.result() for future in futures]
 
     def _dispatch_with_policy(
         self,

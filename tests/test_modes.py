@@ -167,6 +167,42 @@ class ModeRunnerTests(unittest.TestCase):
         self.assertEqual(outcome.state, RunState.FINAL)
         self.assertEqual(len(model.requests), 2)
 
+    def test_parallel_read_only_tool_calls_run_and_feed_back(self) -> None:
+        (self.workspace / "a.txt").write_text("A", encoding="utf-8")
+        (self.workspace / "b.txt").write_text("B", encoding="utf-8")
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("r1", "read_file", {"path": "a.txt"}),
+                                     call("r2", "read_file", {"path": "b.txt"}),
+                                     call("r3", "list_files", {"path": "."}))),
+                ModelResponse("Inspected."),
+            ]
+        )
+        runner = AgentRunner.for_workspace(settings=self._settings(), model_client=model, workspace=self.workspace)
+        outcome = runner.run("Inspect")
+        self.assertEqual(outcome.state, RunState.FINAL)
+        self.assertEqual(len(model.requests), 2)
+        # All three read-only tool results were fed back to the model in order.
+        tool_results = [message for message in model.requests[1] if message.role == "tool"]
+        self.assertEqual(len(tool_results), 3)
+        self.assertEqual(tool_results[0].tool_call_id, "r1")
+        self.assertEqual(tool_results[2].tool_call_id, "r3")
+
+    def test_spawn_agent_runs_a_bounded_subagent(self) -> None:
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("s1", "spawn_agent", {"name": "reviewer", "task": "review the code", "max_steps": 3}),)),
+                ModelResponse("Reviewed: looks OK."),  # consumed by the sub-agent
+                ModelResponse("Done with review."),    # consumed by the outer agent
+            ]
+        )
+        runner = AgentRunner.for_workspace(settings=self._settings(), model_client=model, workspace=self.workspace)
+        outcome = runner.run("Run a review")
+        self.assertEqual(outcome.state, RunState.FINAL)
+        self.assertIn("Done with review", outcome.final_text)
+        # Two outer turns plus one sub-agent turn.
+        self.assertEqual(len(model.requests), 3)
+
     def test_context_compaction_collapses_older_history(self) -> None:
         runner = AgentRunner.for_workspace(
             settings=self._settings(context_char_budget=2_000),

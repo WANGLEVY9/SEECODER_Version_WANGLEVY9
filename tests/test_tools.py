@@ -14,8 +14,10 @@ from seecoder.tools import (
     ListFilesTool,
     ReadFileTool,
     RunCommandTool,
+    SearchCodeTool,
     SearchFilesTool,
     ToolRegistry,
+    WebSearchTool,
     WorkspaceBoundary,
     WriteFileTool,
 )
@@ -145,6 +147,43 @@ class LocalToolsTests(unittest.TestCase):
         self.assertEqual(metacharacter.error.kind, "RestrictedCommand")
         self.assertEqual(inline_python.error.kind, "RestrictedCommand")
         self.assertEqual(absolute.error.kind, "RestrictedCommand")
+
+    def test_web_search_parses_results_with_mocked_fetcher(self) -> None:
+        html_page = (
+            '<a class="result__a" href="https://example.com/page">Example <b>Title</b></a>'
+            '<a class="result__snippet">A short snippet.</a>'
+        )
+        tool = WebSearchTool(fetcher=lambda _query: html_page)
+        result = tool.execute({"query": "example"})
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["results"][0]["url"], "https://example.com/page")
+        self.assertIn("Example Title", result.data["results"][0]["title"])
+        self.assertEqual(result.data["results"][0]["snippet"], "A short snippet.")
+
+    def test_web_search_degrades_gracefully_when_fetch_fails(self) -> None:
+        def broken(_query: str) -> str:
+            raise OSError("network down")
+
+        tool = WebSearchTool(fetcher=broken)
+        result = tool.execute({"query": "anything"})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error.kind, "WebSearchUnavailable")
+
+    def test_search_code_finds_symbol_definitions(self) -> None:
+        (self.root / "src" / "app.py").write_text(
+            "class Greeter:\n    def greet(self, name):\n        return \"hi\"\n\ndef helper():\n    return 1\n",
+            encoding="utf-8",
+        )
+        tool = SearchCodeTool(self.boundary)
+        result = tool.execute({"query": "greet"})
+        self.assertTrue(result.ok)
+        symbols = [match["symbol"] for match in result.data["matches"]]
+        self.assertIn("greet", symbols)
+        self.assertIn("Greeter", symbols)
+        helper = tool.execute({"query": "helper"})
+        self.assertTrue(helper.ok)
+        self.assertEqual(helper.data["matches"][0]["symbol"], "helper")
+        self.assertEqual(helper.data["matches"][0]["kind"], "def")
 
     def test_search_returns_bounded_matching_lines(self) -> None:
         (self.root / "src" / "search_target.py").write_text("first needle\nsecond needle\n", encoding="utf-8")
