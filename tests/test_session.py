@@ -72,3 +72,22 @@ class ConversationTests(unittest.TestCase):
         executed = conversation.approve_plan()
         self.assertEqual(executed.state, RunState.FINAL)
         self.assertEqual((self.workspace / "x.txt").read_text(encoding="utf-8"), "hi")
+
+    def test_conversation_save_and_load_round_trips(self) -> None:
+        model = ScriptedModel([ModelResponse("First answer."), ModelResponse("Second answer.")])
+        conversation = Conversation(settings=self.settings, model_client=model, workspace=self.workspace)
+        conversation.start("Task one")
+        conversation.send("Follow up")
+        path = self.workspace / "session.json"
+        conversation.save(path)
+
+        replay = ScriptedModel([])
+        loaded = Conversation.load(path, settings=self.settings, model_client=replay, workspace=self.workspace)
+        self.assertEqual(len(loaded.messages), len(conversation.messages))
+        self.assertEqual(loaded.messages[-1].role, "assistant")
+        self.assertEqual(loaded.total_usage.total_tokens, conversation.total_usage.total_tokens)
+        self.assertEqual(loaded.current_mode, conversation.current_mode)
+        # A resumed conversation can continue with a new turn.
+        replay.responses.append(ModelResponse("Third answer."))
+        outcome = loaded.send("One more")
+        self.assertEqual(outcome.state, RunState.FINAL)

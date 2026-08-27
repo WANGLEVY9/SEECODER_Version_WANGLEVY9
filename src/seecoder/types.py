@@ -131,6 +131,23 @@ class ToolResult:
 
 
 @dataclass(frozen=True, slots=True)
+class StreamEvent:
+    """One incremental piece of a streaming model response.
+
+    kind: content_delta | tool_call_delta | reasoning_delta | done
+    The final 'done' event carries the fully assembled ModelResponse.
+    """
+
+    kind: str
+    text: str = ""
+    index: int = -1
+    call_id: str = ""
+    name: str = ""
+    arguments: str = ""
+    response: "ModelResponse | None" = None
+
+
+@dataclass(frozen=True, slots=True)
 class RunOutcome:
     state: RunState
     final_text: str

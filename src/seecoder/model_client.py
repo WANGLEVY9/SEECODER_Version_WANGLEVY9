@@ -6,7 +6,7 @@ import time
 from typing import Any, Protocol
 
 from seecoder.config import Settings
-from seecoder.types import ChatMessage, ModelResponse, ToolCall, Usage
+from seecoder.types import ChatMessage, ModelResponse, StreamEvent, ToolCall, Usage
 
 
 class ModelClientError(RuntimeError):
@@ -55,6 +55,18 @@ def _chat_completion_request(
     if settings.thinking_mode == "enabled":
         request["reasoning_effort"] = settings.reasoning_effort
     return request
+
+
+def _delta_reasoning(delta: Any) -> str | None:
+    """Read a streaming reasoning piece across openai client versions."""
+
+    direct = getattr(delta, "reasoning_content", None)
+    if isinstance(direct, str):
+        return direct
+    extra = getattr(delta, "model_extra", None)
+    if isinstance(extra, dict) and isinstance(extra.get("reasoning_content"), str):
+        return extra["reasoning_content"]
+    return None
 
 
 def _usage_from_response(response: Any) -> Usage | None:
@@ -139,6 +151,78 @@ class OpenAICompatibleClient:
             retryable = status_code is None or status_code == 429 or status_code >= 500
             raise ModelClientError(f"{type(error).__name__}: {error}", retryable=retryable) from error
 
+    def complete_stream(self, messages: list[ChatMessage], tools: list[dict[str, Any]]):
+        """Stream a response, yielding incremental events and a final assembled ModelResponse.
+
+        The final 'done' event carries the accumulated ModelResponse; content/tool-call
+        deltas are emitted so the caller can render progress without re-parsing the stream.
+        """
+
+        try:
+            stream = self._client.chat.completions.create(
+                **_chat_completion_request(self.settings, messages, tools),
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+        except Exception as error:
+            status_code = getattr(error, "status_code", None)
+            retryable = status_code is None or status_code == 429 or status_code >= 500
+            raise ModelClientError(f"{type(error).__name__}: {error}", retryable=retryable) from error
+
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_slots: dict[int, dict[str, str]] = {}
+        usage: Usage | None = None
+        provider_model: str | None = getattr(stream, "model", None)
+        try:
+            for chunk in stream:
+                chunk_usage = _usage_from_response(chunk)
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                if not getattr(chunk, "choices", None):
+                    continue
+                delta = chunk.choices[0].delta
+                text = getattr(delta, "content", None)
+                if isinstance(text, str) and text:
+                    content_parts.append(text)
+                    yield StreamEvent(kind="content_delta", text=text)
+                reasoning = _delta_reasoning(delta)
+                if isinstance(reasoning, str) and reasoning:
+                    reasoning_parts.append(reasoning)
+                    yield StreamEvent(kind="reasoning_delta", text=reasoning)
+                for tool_call in (getattr(delta, "tool_calls", None) or []):
+                    index = int(getattr(tool_call, "index", 0) or 0)
+                    slot = tool_slots.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                    if getattr(tool_call, "id", None):
+                        slot["id"] = tool_call.id
+                    function = getattr(tool_call, "function", None)
+                    if function is not None:
+                        if getattr(function, "name", None):
+                            slot["name"] += function.name or ""
+                        if getattr(function, "arguments", None):
+                            slot["arguments"] += function.arguments or ""
+                    yield StreamEvent(
+                        kind="tool_call_delta", index=index, call_id=slot["id"],
+                        name=slot["name"], arguments=slot["arguments"],
+                    )
+        except Exception as error:
+            status_code = getattr(error, "status_code", None)
+            retryable = status_code is None or status_code == 429 or status_code >= 500
+            raise ModelClientError(f"{type(error).__name__}: {error}", retryable=retryable) from error
+
+        calls = tuple(
+            ToolCall(id=slot["id"] or f"call_{index}", name=slot["name"], arguments=slot["arguments"] or "{}")
+            for index, slot in sorted(tool_slots.items())
+        )
+        assembled = ModelResponse(
+            content="".join(content_parts) or None,
+            tool_calls=calls,
+            model=provider_model,
+            reasoning_content="".join(reasoning_parts) or None,
+            usage=usage,
+        )
+        yield StreamEvent(kind="done", response=assembled)
+
 
 class RetryingModelClient:
     """Make bounded, observable retries without hiding non-retryable configuration errors."""
@@ -160,3 +244,17 @@ class RetryingModelClient:
                 self.sleeper(0.5 * (2**attempt))
         assert last_error is not None
         raise last_error
+
+    def complete_stream(self, messages: list[ChatMessage], tools: list[dict[str, Any]]):
+        """Forward streaming deltas; the inner client owns the request and assembly.
+
+        Streaming retries are not attempted because a consumed stream cannot be replayed.
+        """
+
+        inner = getattr(self.client, "complete_stream", None)
+        if callable(inner):
+            yield from inner(messages, tools)
+            return
+        # Fall back to a non-streaming single event for clients without streaming.
+        response = self.complete(messages, tools)
+        yield StreamEvent(kind="done", response=response)

@@ -24,6 +24,22 @@ class ScriptedModel:
         return self.responses.pop(0)
 
 
+class StreamingModel:
+    """A model that only supports streaming; each call yields the next turn's events."""
+
+    def __init__(self, turns: list[list[Any]]) -> None:
+        self.turns = turns
+        self.requests: list[list[ChatMessage]] = []
+
+    def complete(self, messages: list[ChatMessage], tools: list[dict[str, Any]]) -> ModelResponse:
+        raise AssertionError("non-streaming complete should not be called when streaming is wired")
+
+    def complete_stream(self, messages: list[ChatMessage], tools: list[dict[str, Any]]):
+        self.requests.append(messages)
+        for event in self.turns.pop(0):
+            yield event
+
+
 def call(identifier: str, name: str, arguments: dict[str, Any]) -> ToolCall:
     return ToolCall(id=identifier, name=name, arguments=json.dumps(arguments))
 
@@ -104,6 +120,96 @@ class ModeRunnerTests(unittest.TestCase):
         outcome = runner.run("Write x.txt")
         self.assertEqual(outcome.state, RunState.FINAL)
         self.assertEqual((self.workspace / "x.txt").read_text(encoding="utf-8"), "hello")
+
+    def test_streaming_forwards_deltas_and_consumes_assembled_response(self) -> None:
+        from seecoder.types import StreamEvent
+
+        model = StreamingModel(
+            [
+                [
+                    StreamEvent(kind="content_delta", text="Hello "),
+                    StreamEvent(kind="content_delta", text="world"),
+                    StreamEvent(kind="done", response=ModelResponse("Hello world", usage=Usage(7, 3, 10))),
+                ]
+            ]
+        )
+        deltas: list[StreamEvent] = []
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(), model_client=model, workspace=self.workspace,
+            stream_sink=deltas.append,
+        )
+        outcome = runner.run("Say hi")
+        self.assertEqual(outcome.state, RunState.FINAL)
+        self.assertEqual(outcome.final_text, "Hello world")
+        self.assertEqual([event.kind for event in deltas], ["content_delta", "content_delta", "done"])
+        self.assertEqual(outcome.usage.total_tokens, 10)
+
+    def test_streaming_tool_call_still_executes_local_tool(self) -> None:
+        from seecoder.types import StreamEvent
+
+        (self.workspace / "a.txt").write_text("hi", encoding="utf-8")
+        model = StreamingModel(
+            [
+                [
+                    StreamEvent(kind="tool_call_delta", index=0, call_id="c1", name="read_file"),
+                    StreamEvent(kind="done", response=ModelResponse(
+                        None, (call("c1", "read_file", {"path": "a.txt"}),),
+                    )),
+                ],
+                [StreamEvent(kind="done", response=ModelResponse("Read a.txt."))],
+            ]
+        )
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(), model_client=model, workspace=self.workspace,
+            stream_sink=lambda _event: None,
+        )
+        outcome = runner.run("Read a.txt")
+        self.assertEqual(outcome.state, RunState.FINAL)
+        self.assertEqual(len(model.requests), 2)
+
+    def test_context_compaction_collapses_older_history(self) -> None:
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(context_char_budget=2_000),
+            model_client=ScriptedModel([ModelResponse("done")]),
+            workspace=self.workspace,
+            compactor=lambda prefix: "compact summary note",
+        )
+        messages = [ChatMessage(role="system", content="sys"), ChatMessage(role="user", content="task")]
+        for index in range(8):
+            messages.append(ChatMessage(role="assistant", content="step", tool_calls=(call(f"c{index}", "list_files", {"path": "."}),)))
+            messages.append(ChatMessage(role="tool", tool_call_id=f"c{index}", content="x" * 200))
+        compacted = runner._maybe_compact(messages)
+        self.assertTrue(compacted)
+        self.assertEqual(messages[0].role, "system")
+        self.assertEqual(messages[1].role, "user")
+        self.assertIn("<compacted_context>", messages[2].content)
+        # The compacted history drops the older turns while keeping system+task+recent tail.
+        self.assertLessEqual(len(messages), 7)
+
+    def test_compaction_is_skipped_in_thinking_mode(self) -> None:
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(context_char_budget=2_000, thinking_mode="enabled"),
+            model_client=ScriptedModel([ModelResponse("done")]),
+            workspace=self.workspace,
+            compactor=lambda prefix: "compact summary note",
+        )
+        messages = [ChatMessage(role="system", content="s"), ChatMessage(role="user", content="t")]
+        for index in range(6):
+            messages.append(ChatMessage(role="assistant", content=None, tool_calls=(call(f"c{index}", "list_files", {}),), reasoning_content="reasoning" * 100))
+            messages.append(ChatMessage(role="tool", tool_call_id=f"c{index}", content="x" * 200))
+        compacted = runner._maybe_compact(messages)
+        self.assertFalse(compacted)
+        self.assertEqual(len(messages), 14)
+
+    def test_project_memory_is_injected_into_system_prompt(self) -> None:
+        (self.workspace / "SEECODER.md").write_text("Remember to strip whitespace in normalize_tag.", encoding="utf-8")
+        model = ScriptedModel([ModelResponse("done")])
+        runner = AgentRunner.for_workspace(settings=self._settings(), model_client=model, workspace=self.workspace)
+        runner.run("Do it")
+        system = model.requests[0][0]
+        self.assertEqual(system.role, "system")
+        self.assertIn("<project_memory>", system.content)
+        self.assertIn("Remember to strip whitespace", system.content)
 
     def test_usage_is_accumulated_and_reported(self) -> None:
         model = ScriptedModel(

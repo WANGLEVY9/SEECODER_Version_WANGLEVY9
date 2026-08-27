@@ -69,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--quiet", action="store_true", help="hide intermediate events")
     chat.add_argument("--event-json", action="store_true",
                       help="emit local runner events as JSONL for the bundled desktop UI")
+    chat.add_argument("--resume", type=Path, help="resume a saved conversation from this JSON file")
+    chat.add_argument("--save", type=Path, help="save the conversation to this JSON file after each turn")
     return parser
 
 
@@ -92,6 +94,13 @@ def _event_json_printer(event: str, data: dict[str, Any]) -> None:
     print(json.dumps({"event": event, "data": data}, ensure_ascii=False), flush=True)
 
 
+def _token_json_printer(event: Any) -> None:
+    """Forward streaming content deltas as token events for the desktop UI."""
+
+    if event.kind == "content_delta":
+        print(json.dumps({"event": "token", "data": {"text": event.text}}, ensure_ascii=False), flush=True)
+
+
 def _auto_approver(call: ToolCall) -> bool:
     return True
 
@@ -105,6 +114,19 @@ def _stdin_approver(stream: Any) -> Any:
         return bool(line) and line.strip().lower().startswith("y")
 
     return decide
+
+
+def _make_compactor(settings: Settings, client: Any) -> Any:
+    """Return a model-driven history compactor, or None when compaction is disabled."""
+
+    if not settings.compaction_enabled:
+        return None
+    from seecoder.compaction import summarize
+
+    def compactor(prefix: Any) -> str:
+        return summarize(client, prefix)
+
+    return compactor
 
 
 def _make_approver(mode: Mode, auto_approve: bool, stream: Any) -> Any:
@@ -166,6 +188,8 @@ def _run_run(args: Any, settings: Settings, trace: TraceWriter, workspace: Path)
         event_sink=_event_json_printer if args.event_json else (None if args.quiet else _event_printer),
         mode=mode,
         approver=approver,
+        stream_sink=_token_json_printer if args.event_json else None,
+        compactor=_make_compactor(settings, client),
     )
     outcome = runner.run(args.task)
     if args.event_json:
@@ -184,23 +208,33 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
     mode = Mode(args.mode) if args.mode else settings.mode
     approver = _make_approver(mode, args.auto_approve, sys.stdin)
     client = RetryingModelClient(OpenAICompatibleClient(settings), retries=settings.model_retries)
-    conversation = Conversation(
-        settings=settings,
-        model_client=client,
-        workspace=workspace,
-        trace=trace,
-        event_sink=_event_json_printer if args.event_json else (None if args.quiet else _event_printer),
-        mode=mode,
-        approver=approver,
-    )
-    print("SEECODER chat ready. Type a task, then an empty line to send with mode=" + mode.value + ".", file=sys.stderr)
-    first = True
+    event_sink = _event_json_printer if args.event_json else (None if args.quiet else _event_printer)
+    resume = getattr(args, "resume", None)
+    if resume is not None:
+        conversation = Conversation.load(
+            resume, settings=settings, model_client=client, workspace=workspace,
+            trace=trace, event_sink=event_sink, approver=approver,
+        )
+        print("Resumed saved conversation from " + str(resume) + ".", file=sys.stderr)
+        first = False
+    else:
+        conversation = Conversation(
+            settings=settings, model_client=client, workspace=workspace,
+            trace=trace, event_sink=event_sink, mode=mode, approver=approver,
+            stream_sink=_token_json_printer if args.event_json else None,
+            compactor=_make_compactor(settings, client),
+        )
+        first = True
+    save = getattr(args, "save", None)
+    print("SEECODER chat ready. Type a task line to send with mode=" + mode.value + ".", file=sys.stderr)
     for line in sys.stdin:
         text = line.strip()
         if not text:
             continue
         outcome = conversation.start(text) if first else conversation.send(text)
         first = False
+        if save is not None:
+            conversation.save(save)
         if args.event_json:
             print(json.dumps({"event": "turn_outcome", "data": {
                 "state": outcome.state, "final_text": outcome.final_text, "steps": outcome.steps,

@@ -62,6 +62,7 @@ class Settings:
     thinking_mode: str = "provider_default"
     reasoning_effort: str = "high"
     mode: Mode = Mode.AUTO
+    compaction_enabled: bool = False
 
     @classmethod
     def from_environment(
@@ -109,6 +110,10 @@ class Settings:
         if mode_name not in {"auto", "plan", "ask"}:
             raise ConfigError("SEECODER_MODE must be auto, plan, or ask")
 
+        compaction = (value("SEECODER_COMPACTION", "0") or "0").strip().lower()
+        if compaction not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+            raise ConfigError("SEECODER_COMPACTION must be 0/1 or on/off")
+
         return cls(
             api_key=api_key,
             model=model,
@@ -119,4 +124,5 @@ class Settings:
             thinking_mode=thinking_mode,
             reasoning_effort=reasoning_effort,
             mode=Mode(mode_name),
+            compaction_enabled=compaction in {"1", "true", "yes", "on"},
         )

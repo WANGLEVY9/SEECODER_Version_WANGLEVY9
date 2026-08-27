@@ -60,6 +60,15 @@ function renderConversation() {
   conversation.scrollTop = conversation.scrollHeight;
 }
 function render() { renderSessions(); renderConversation(); }
+let liveAgentEl = null;
+function ensureLiveAgent() {
+  if (!liveAgentEl) {
+    conversation.insertAdjacentHTML('beforeend', '<article class="message agent"><div class="message-meta"><span class="dot"></span>SEECODER</div><div class="message-body" data-live></div></article>');
+    liveAgentEl = conversation.querySelector('[data-live]');
+    conversation.scrollTop = conversation.scrollHeight;
+  }
+  return liveAgentEl;
+}
 function addActivity(title, detail = '', kind = '') { const entry = document.createElement('div'); entry.className = 'activity-entry ' + kind; entry.innerHTML = '<strong>' + escapeText(title) + '</strong>' + (detail ? '<small>' + escapeText(detail) + '</small>' : ''); activityList.prepend(entry); }
 function setRunning(running) { state.running = running; sendButton.disabled = running; stopButton.disabled = !running; taskInput.disabled = running; if (modeSelect) modeSelect.disabled = running; setBadge(running ? '运行中' : '就绪', running ? 'running' : 'ready'); }
 function showApproval(text, onApprove, onDeny) {
@@ -87,6 +96,7 @@ function executePlanAgain() {
 function handleRunnerEvent(payload) {
   const { event, data } = payload || {};
   if (event === 'usage') { state.usageTotal = data?.total_tokens || state.usageTotal; setCost(state.usageTotal); return; }
+  if (event === 'token') { const el = ensureLiveAgent(); if (el) { el.textContent += (data?.text || ''); conversation.scrollTop = conversation.scrollHeight; } return; }
   if (event === 'approval_request') {
     showApproval('批准工具调用：' + (data?.name || '未知工具') + '？', () => window.seecoderDesktop.approve(true), () => window.seecoderDesktop.approve(false));
     addActivity('等待批准', data?.name || '', 'running'); return;
@@ -99,10 +109,10 @@ function handleRunnerEvent(payload) {
       appendMessage('agent', planLines ? (data?.final_text || '') + '\n' + planLines : (data?.final_text || '计划已生成。'));
       addActivity('计划已生成，等待批准', planSteps.length + ' 步计划', 'running');
       showApproval('批准该计划并以自动模式执行？', () => executePlanAgain(), () => setRunning(false));
-      setBadge('待批准', 'running'); render(); return;
+      liveAgentEl = null; setBadge('待批准', 'running'); render(); return;
     }
     appendMessage('agent', data?.final_text || '任务结束，但没有收到可显示的总结。');
-    addActivity('完成：' + stateName, (data?.steps ?? 0) + ' 步', stateName === 'final' ? 'ok' : 'error'); setRunning(false); setBadge(stateName === 'final' ? '已完成' : '需处理', stateName === 'final' ? 'ready' : 'error'); render(); return;
+    addActivity('完成：' + stateName, (data?.steps ?? 0) + ' 步', stateName === 'final' ? 'ok' : 'error'); setRunning(false); liveAgentEl = null; setBadge(stateName === 'final' ? '已完成' : '需处理', stateName === 'final' ? 'ready' : 'error'); render(); return;
   }
   const summaries = {
     run_started: ['任务已启动', data?.workspace], model_request: ['请求模型', '第 ' + (data?.step ?? '?') + ' 步'], tool_dispatch: ['准备工具调用', (data?.count ?? 0) + ' 个工具'],
