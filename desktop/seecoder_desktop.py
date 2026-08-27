@@ -31,17 +31,18 @@ from tkinter import filedialog, messagebox, scrolledtext
 
 APP_NAME = "SEECODER Desktop"
 STATE_VERSION = 1
-# Warm, low-contrast colors make the local tool feel calm without copying an
-# external product's brand. Tk 9 renders this palette reliably on macOS.
-BACKGROUND = "#fbf8f3"
-SIDEBAR = "#f1eee9"
-PANEL = "#fffdf9"
-PANEL_ACTIVE = "#e7e1db"
-TEXT = "#373547"
-MUTED = "#777488"
-ACCENT = "#625b8f"
-SUCCESS = "#2b7a67"
-WARNING = "#a06b23"
+# Shared SEECODER brand palette: sky blue, deep blue, green, orange and navy.
+# Keeping the fallback Tk client on the same tokens makes the project coherent
+# even when Electron is unavailable on a demo machine.
+BACKGROUND = "#f5fbfe"
+SIDEBAR = "#eef7fb"
+PANEL = "#ffffff"
+PANEL_ACTIVE = "#e4f4fb"
+TEXT = "#19344d"
+MUTED = "#6c8291"
+ACCENT = "#2e83d3"
+SUCCESS = "#3eb779"
+WARNING = "#ffad2e"
 ERROR = "#bf5360"
 
 

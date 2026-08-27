@@ -38,7 +38,7 @@ function shortPath(value) { const parts = String(value).split("/").filter(Boolea
 function appendMessage(role, content) { const session = current(); if (!session) return; session.messages.push({ role, content, createdAt: Date.now() }); session.updatedAt = Date.now(); if (role === "user" && session.title === "新对话") session.title = content.replace(/\s+/g, " ").slice(0, 22) || "新对话"; persist(); }
 function renderConversation() {
   const session = current(); $("#session-title").textContent = session.title; $("#workspace-label").textContent = session.workspace === defaultWorkspace ? "默认演示工作区 · demo_workspace" : session.workspace;
-  if (!session.messages.length) { conversation.innerHTML = `<section class="welcome"><div><div class="welcome-mark">S</div><h1>从一个真实任务开始</h1><p>选择你的工作区，描述希望完成的修改。SEECODER 会在本地读取文件、执行受限命令并给出可审计的结果。</p><span class="hint">⌘ ↵ 发送任务</span></div></section>`; return; }
+  if (!session.messages.length) { conversation.innerHTML = `<section class="welcome"><div><div class="welcome-mark"><img src="assets/seecoder-logo.png" alt="SEECODER" /></div><h1>从一个真实任务开始</h1><p>选择你的工作区，描述希望完成的修改。SEECODER 会在本地读取文件、执行受限命令并给出可审计的结果。</p><span class="hint">⌘ ↵ 发送任务</span></div></section>`; return; }
   conversation.innerHTML = session.messages.map((message) => { const label = { user: "你", agent: "SEECODER", system: "本地状态" }[message.role] || "本地状态"; return `<article class="message ${message.role}"><div class="message-meta"><span class="dot"></span>${label}</div><div class="message-body">${escapeText(message.content)}</div></article>`; }).join("");
   conversation.scrollTop = conversation.scrollHeight;
 }
