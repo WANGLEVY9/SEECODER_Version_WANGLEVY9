@@ -1,0 +1,21 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+
+# Python and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+
+# Local agent execution evidence and demo recordings
+runs/
+recordings/
+*.mp4
+
+# Operating system files
+.DS_Store
