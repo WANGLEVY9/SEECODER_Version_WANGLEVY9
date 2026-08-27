@@ -37,14 +37,17 @@ Use `uv run seecoder --help` for options. Each run writes an ignored, redacted J
 
 ## Local desktop UI
 
-An original, local-only macOS desktop UI is provided in `desktop/`. It uses standard-library Tk 9 through a local Homebrew Python runtime and starts the existing CLI in local JSON-event mode; it neither embeds Codex nor calls any hosted execution/file service.
+The primary desktop interface is an original Electron shell with native HTML/CSS/JavaScript rendering. This is a UI technology only, not an Agent framework: Electron starts the existing self-written CLI as a local child process and renders its local JSONL events. It neither embeds Codex nor calls a hosted execution/file service.
 
 ```bash
-brew install python-tk@3.12  # first launch only; system runtime, not a project dependency
-./desktop/run_desktop.sh
+node --version              # Node.js 22.12 or newer
+cd desktop/electron
+npm install                 # first launch only
+cd ../..
+./desktop/run_desktop_electron.sh
 ```
 
-The UI keeps a local session index under `~/.seecoder-desktop/` and deliberately never displays or persists API keys. Its backend invocation uses the default restricted argv execution mode; it never passes `--host-shell`. See [docs/p2-desktop-plan.md](docs/p2-desktop-plan.md) for the architecture and assessment boundary.
+Sessions are saved only in the app's local browser storage and no UI code reads, displays, or persists API keys. The backend invocation uses a literal argv array in default restricted mode and never passes `--host-shell`. The earlier Tk implementation remains as a compatibility fallback at `desktop/run_desktop.sh`; the Electron UI is the recommended demo surface. See [docs/p2-desktop-plan.md](docs/p2-desktop-plan.md) for the architecture and assessment boundary.
 
 The CLI returns `0` only when the model gives a final response; stop-limit, tool-error, model-failure, protocol-failure, and cancellation outcomes have distinct non-zero codes and remain visible in the trace.
 

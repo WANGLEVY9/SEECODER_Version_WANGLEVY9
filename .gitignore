@@ -12,6 +12,10 @@ __pycache__/
 htmlcov/
 .venv/
 
+# Desktop renderer dependencies and packaged outputs
+node_modules/
+desktop/electron/dist/
+
 # Local agent execution evidence and demo recordings
 runs/
 recordings/

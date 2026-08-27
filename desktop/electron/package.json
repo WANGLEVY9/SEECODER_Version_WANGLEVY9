@@ -1,0 +1,17 @@
+{
+  "name": "seecoder-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Original local Electron interface for the SEECODER coding agent.",
+  "main": "main.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0"
+  }
+}

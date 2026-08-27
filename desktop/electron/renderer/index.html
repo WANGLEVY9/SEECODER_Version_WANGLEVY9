@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SEECODER</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="drag-region"></div>
+        <div class="brand-row"><span class="brand-mark">S</span><span>SEECODER</span><button class="icon-button muted" aria-label="展开菜单">⌄</button></div>
+        <button id="new-session" class="navigation-action"><span>＋</span> 新对话 <kbd>⌘ N</kbd></button>
+        <button id="choose-workspace" class="navigation-action"><span>⌁</span> 打开工作区</button>
+        <section class="session-section">
+          <div class="section-caption">项目会话</div>
+          <div id="session-list" class="session-list" aria-label="本地会话列表"></div>
+        </section>
+        <div class="sidebar-footer">
+          <div class="local-indicator"><span></span> 本地优先</div>
+          <p>会话仅保存在此设备<br />不会保存 API key</p>
+        </div>
+      </aside>
+
+      <section class="conversation-panel">
+        <header class="topbar drag-region">
+          <div class="conversation-heading"><span class="folder-icon">⌂</span><div><strong id="session-title">新对话</strong><span id="workspace-label">尚未选择工作区</span></div></div>
+          <button id="top-workspace" class="workspace-button no-drag">⌁ <span>选择工作区</span><small>⌄</small></button>
+        </header>
+        <div id="conversation" class="conversation" aria-live="polite"></div>
+        <section class="composer-wrap">
+          <div class="composer">
+            <textarea id="task-input" rows="3" placeholder="描述一个真实的编程任务…"></textarea>
+            <div class="composer-footer">
+              <div class="composer-tools"><button id="composer-workspace" class="subtle-button">＋</button><span>本地 · 受限执行模式</span></div>
+              <div class="send-controls"><span class="shortcut">⌘ ↵</span><button id="stop-run" class="stop-button" disabled>停止</button><button id="send-task" class="send-button" aria-label="发送任务">↑</button></div>
+            </div>
+          </div>
+          <p class="disclaimer">模型只提出工具意图；文件、命令与 Git 操作均由本地 SEECODER 执行。</p>
+        </section>
+      </section>
+
+      <aside class="activity-panel">
+        <div class="activity-topbar drag-region"></div>
+        <div class="activity-content">
+          <div class="activity-heading"><div><span class="eyebrow">执行轨迹</span><h2>运行状态</h2></div><span id="state-badge" class="state-badge">就绪</span></div>
+          <p class="activity-description">每一步都来自自研 AgentRunner 的本地 JSONL 事件，不使用托管执行服务。</p>
+          <div id="activity-list" class="activity-list"></div>
+          <button id="about-button" class="about-button">设计与安全说明 <span>→</span></button>
+        </div>
+      </aside>
+    </main>
+    <dialog id="about-dialog" class="about-dialog">
+      <button id="close-about" class="close-dialog" aria-label="关闭">×</button>
+      <span class="eyebrow">SEECODER 桌面端</span>
+      <h2>界面与 Agent 内核分离</h2>
+      <p>Electron 仅负责本地桌面渲染和交互。它通过受控的本机子进程调用现有 CLI；上下文、工具 schema、文件读写、命令执行、错误处理和停止条件仍全部由 Python 自研实现。</p>
+      <p>界面不读取、不显示、不持久化 API key，也不会启用 <code>--host-shell</code>。</p>
+    </dialog>
+    <script src="renderer.js"></script>
+  </body>
+</html>
