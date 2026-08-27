@@ -62,6 +62,7 @@ kbd { margin-left: auto; color: #aaa4ae; font-size: 10px; font-family: inherit; 
 .mode-select { border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--text); font-size: 11px; padding: 3px 6px; }
 .cost-badge { display: inline-block; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 99px; background: var(--paper); color: var(--muted); padding: 5px 10px; font-size: 11px; font-weight: 650; }
 .approval-banner { display: flex; align-items: center; gap: 10px; margin: 0 32px 10px; padding: 9px 12px; border: 1px solid #e0dbea; border-radius: 12px; background: #fbf8ff; max-width: 840px; margin-left: auto; margin-right: auto; }
+.approval-banner[hidden] { display: none; }
 .approval-banner span { flex: 1; color: var(--text); font-size: 12px; }
 .approve-button, .deny-button { border: 0; border-radius: 8px; font-weight: 700; font-size: 12px; padding: 6px 14px; }
 .approve-button { background: var(--teal); color: #fff; }

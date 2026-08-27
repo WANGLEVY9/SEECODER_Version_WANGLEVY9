@@ -1,12 +1,12 @@
 # SEECODER 开发边界分析（对照推免考核要求）
 
-> 审计日期：2026-08-27。本文档回答三个问题：项目现状是什么、考核边界是什么、当前设计与边界的关系是什么。
+> 审计日期：2026-08-28。本文档回答三个问题：项目现状是什么、考核边界是什么、当前设计与边界的关系是什么。
 
 ## 0. 结论先行
 
-- **合规性**：项目完全落在题目允许范围内——agent 内核全部自研，唯一的运行时依赖是模型厂商客户端 `openai`，只使用模型原生 tool calling，本地执行文件和命令；没有封装现成 agent 产品，没有使用任何 agent 框架/SDK，没有调用托管代码执行或文件 API。
+- **合规性**：项目落在题目允许范围内——Agent 内核全部自研，唯一业务运行时依赖是模型厂商客户端 `openai`，只使用模型原生 tool calling，本地执行文件和命令；没有封装现成 agent 产品，没有使用任何 agent 框架/SDK，没有调用托管代码执行或文件 API。
 - **提交物进度**：Git 仓库 ✅（已公开、已推送、历史无密钥）；README.txt ⏳ 未写；视频 ⏳ 未录。
-- **剩余时间**：约 6 天（截止 2026-09-02 24:00）。核心工作量已基本完成，剩余工作集中在 P1.5：预演、README.txt、视频、打包、提交纪律。
+- **剩余时间**：约 5 天（截止 2026-09-02 24:00）。核心工作量已基本完成，剩余工作集中在 P1.5：预演、README.txt、视频、打包、提交纪律。
 
 ## 1. 项目代码全貌
 
@@ -20,7 +20,7 @@ SEECODER（Python 3.12 + uv）
 │  ├─ runner.py                   # AgentRunner 状态机主循环（核心）
 │  ├─ context.py                  # 确定性字符预算裁剪，保留 system+初始任务+最近完整工具回合
 │  ├─ trace.py                    # JSONL 执行轨迹，密钥名+已知密钥值双重脱敏
-│  └─ tools/                      # 7 个本地工具 + ToolRegistry + WorkspaceBoundary
+│  └─ tools/                      # 10 个本地工具 + ToolRegistry + WorkspaceBoundary
 │     ├─ base.py                  # 注册表、JSON 参数校验、symlink 解析后工作区边界
 │     ├─ files.py                 # list_files / read_file / write_file / search_files / apply_patch
 │     ├─ git.py                   # git_diff（只读，固定参数向量）
@@ -29,7 +29,7 @@ SEECODER（Python 3.12 + uv）
 │  ├─ electron/                   # 原创 Electron 展示层（contextIsolation+sandbox，spawn CLI 子进程）
 │  └─ seecoder_desktop.py         # Tk 兼容回退版本
 ├─ demo_workspace/                # 演示 fixture：normalize_tag 缺陷（按设计失败）
-├─ tests/                         # 43 项离线单元测试，不依赖真实 API
+├─ tests/                         # 65 项离线单元测试，不依赖真实 API
 ├─ docs/                          # P0/P1/P2 计划与验收记录
 └─ pyproject.toml / uv.lock       # 依赖树仅 openai + 其传递依赖（httpx/pydantic 等）
 ```
@@ -62,7 +62,7 @@ SEECODER（Python 3.12 + uv）
 
 ### 2.4 其他规则
 
-- 截止时间 2026-09-02 24:00 —— 距今约 6 天。
+- 截止时间 2026-09-02 24:00 —— 距今约 5 天。
 - 允许并鼓励 AI 工具辅助开发 —— 项目中已使用（docs 亦如实记录），且每一处设计均有归属。
 - API key 不出现在仓库/README/视频 —— `.env` 已 gitignore 且未跟踪；trace 对密钥脱敏；CLI 拒绝 workspace 内的 `.env`/trace 目录；桌面 UI 不读取、不显示、不持久化 key。
 
@@ -77,10 +77,11 @@ SEECODER（Python 3.12 + uv）
 5. **单模型适配 + Protocol 接口**：`ModelClient` 是 Protocol，OpenAICompatibleClient 是第一个 adapter；扩展其他厂商不改 agent loop。答辩可展示这是面向扩展而非堆砌。
 6. **退出码语义**：FINAL=0，停止条件/失败/Ctrl+C 分别 3/4/130，desktop 与 CLI 据此区分结果，便于演示可审计。
 
-## 4. 现状验证（2026-08-27 实测）
+## 4. 现状验证（2026-08-28 实测）
 
-- 43 项 Python 单元测试在**干净环境**下全部通过（`env -i PATH=... PYTHONPATH=src python3.12 -m unittest discover -s tests`）。
-- Electron 端 2 项测试通过（`node --test`）：后端调用为字面 argv、不传 `--host-shell`；事件解析器拒绝畸形输入。
+- 65 项 Python 单元测试在**干净环境**下全部通过（`env -i PATH=... PYTHONPATH=src python3.12 -m unittest discover -s tests`）。
+- Electron 端 3 项测试通过（`node --test`）：后端调用为字面 argv、不传 `--host-shell`；事件解析器拒绝畸形输入。
+- Tk 兼容端 3 项测试通过；`git diff --check`、`compileall` 与启动脚本语法检查通过。
 - `python -m seecoder --help` 正常；缺 key 时 CLI 明确报 `Missing required configuration: SEECODER_API_KEY` 且不回显密钥。
 - `demo_workspace` fixture 按设计失败（`normalize_tag` 未 strip 空白）——这正是视频演示的起点。
 
@@ -90,9 +91,9 @@ SEECODER（Python 3.12 + uv）
 
 - remote：`https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9.git`，GitHub 页面确认 `public:true`、`isFork:false`、`isMirror:false`。
 - 仓库创建时间 2026-08-27T06:26:53Z（UTC，即北京 14:26），首笔提交 12:00Z —— 需与"题目发布"时间比对确认满足"题目发布后新建"。
-- 共 4 个 commit，全部 2026-08-27；reflog 无改写痕迹；`git grep` 全历史未发现真实密钥（仅测试用假 key）。
+- 共 8 个 commit，均在截止日期前；`git fsck` 未发现悬空 commit，`git grep` 全历史未发现真实密钥（仅测试用假 key）。本地悬空 tree 对象不属于可达提交历史，也不会被普通 push 发送。
 - 本地存在 `refs/codex/*` 检查点引用（Codex CLI 开发痕迹），仅本地、普通 push 不会推送，无需处理。
-- **提交粒度提示**：目前 4 个 commit 且代码一次成型（docs 中宣称"每步一提交"与实际不符）。这不违规（历史完整、未改写），但评委"结合提交时间与内容了解开发过程"时，4 个 commit 的过程性较弱。剩余 6 天建议按功能点/修复小步提交，9/2 24:00 后停止推送。
+- **提交粒度提示**：当前提交已按 Agent 内核、桌面端、品牌、交互、上下文与高级工具等功能点分段。后续只对真实修复、审计和交付材料进行小步提交，9/2 24:00 后停止推送。
 
 ## 6. 剩余工作与风险清单（按优先级）
 

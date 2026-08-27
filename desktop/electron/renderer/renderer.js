@@ -70,7 +70,7 @@ function ensureLiveAgent() {
   return liveAgentEl;
 }
 function addActivity(title, detail = '', kind = '') { const entry = document.createElement('div'); entry.className = 'activity-entry ' + kind; entry.innerHTML = '<strong>' + escapeText(title) + '</strong>' + (detail ? '<small>' + escapeText(detail) + '</small>' : ''); activityList.prepend(entry); }
-function setRunning(running) { state.running = running; sendButton.disabled = running; stopButton.disabled = !running; taskInput.disabled = running; if (modeSelect) modeSelect.disabled = running; setBadge(running ? '运行中' : '就绪', running ? 'running' : 'ready'); }
+function setRunning(running) { state.running = running; sendButton.disabled = running; stopButton.disabled = !running; taskInput.disabled = running; if (modeSelect) modeSelect.disabled = running; if (!running) hideApproval(); setBadge(running ? '运行中' : '就绪', running ? 'running' : 'ready'); }
 function showApproval(text, onApprove, onDeny) {
   approvalText.textContent = text; approvalBanner.hidden = false;
   const approveBtn = $('#approve-btn'); const denyBtn = $('#deny-btn');
@@ -111,6 +111,7 @@ function handleRunnerEvent(payload) {
       showApproval('批准该计划并以自动模式执行？', () => executePlanAgain(), () => setRunning(false));
       liveAgentEl = null; setBadge('待批准', 'running'); render(); return;
     }
+    hideApproval();
     appendMessage('agent', data?.final_text || '任务结束，但没有收到可显示的总结。');
     addActivity('完成：' + stateName, (data?.steps ?? 0) + ' 步', stateName === 'final' ? 'ok' : 'error'); setRunning(false); liveAgentEl = null; setBadge(stateName === 'final' ? '已完成' : '需处理', stateName === 'final' ? 'ready' : 'error'); render(); return;
   }
@@ -121,10 +122,10 @@ function handleRunnerEvent(payload) {
     configuration_error: ['配置错误', data?.message || '', 'error'], runner_error: ['本地进程错误', data?.message || '', 'error'], process_exit: ['本地进程已退出', 'code=' + (data?.code ?? 'null')],
   };
   const summary = summaries[event]; if (summary) addActivity(summary[0], summary[1], summary[2]); else if (event === 'unstructured_output') addActivity('本地输出', data?.text || '');
-  if (event === 'process_exit' && state.running) { setRunning(false); hideApproval(); render(); }
+  if (event === 'process_exit') { setRunning(false); hideApproval(); render(); }
 }
 
-$('#new-session').addEventListener('click', () => { if (state.running) return; state.sessions.unshift(makeSession(current()?.workspace || defaultWorkspace)); state.currentId = state.sessions[0].id; persist(); render(); taskInput.focus(); });
+$('#new-session').addEventListener('click', () => { if (state.running) return; hideApproval(); state.sessions.unshift(makeSession(current()?.workspace || defaultWorkspace)); state.currentId = state.sessions[0].id; persist(); render(); taskInput.focus(); });
 $('#choose-workspace').addEventListener('click', chooseWorkspace); $('#top-workspace').addEventListener('click', chooseWorkspace); $('#composer-workspace').addEventListener('click', chooseWorkspace); sendButton.addEventListener('click', sendTask);
 stopButton.addEventListener('click', async () => { const r = await window.seecoderDesktop.stopRun(); if (r?.stopped) addActivity('已请求停止', '正在终止本地任务'); });
 if (modeSelect) modeSelect.addEventListener('change', () => { state.mode = modeSelect.value; addActivity('切换工作模式', state.mode); });
@@ -132,4 +133,3 @@ taskInput.addEventListener('keydown', (event) => { if ((event.metaKey || event.c
 $('#about-button').addEventListener('click', () => $('#about-dialog').showModal()); $('#close-about').addEventListener('click', () => $('#about-dialog').close());
 window.seecoderDesktop.onRunnerEvent(handleRunnerEvent); window.seecoderDesktop.onRunnerStderr((payload) => addActivity('CLI 提示', payload?.data?.text || '', 'error'));
 ensureSession(); render(); addActivity('桌面端已就绪', '默认模式 ' + state.mode, 'ok');
-

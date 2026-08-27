@@ -20,6 +20,7 @@ desktop/electron/dist/
 runs/
 recordings/
 *.mp4
+validation_workspaces/
 
 # Operating system files
 .DS_Store
