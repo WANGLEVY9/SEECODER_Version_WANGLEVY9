@@ -47,8 +47,9 @@ def call(identifier: str, name: str, arguments: dict[str, Any]) -> ToolCall:
 class ApprovalPolicyTests(unittest.TestCase):
     def test_read_only_tools_run_in_every_mode(self) -> None:
         for mode in (Mode.AUTO, Mode.PLAN, Mode.ASK):
-            self.assertTrue(is_read_only("list_files"))
-            self.assertEqual(Policy(mode).decide("read_file"), ApprovalDecision.ALLOW)
+            for tool_name in ("list_files", "read_file", "search_code", "git_status", "git_log", "list_skills"):
+                self.assertTrue(is_read_only(tool_name))
+                self.assertEqual(Policy(mode).decide(tool_name), ApprovalDecision.ALLOW)
 
     def test_auto_permits_mutations_without_prompt(self) -> None:
         self.assertEqual(Policy(Mode.AUTO).decide("write_file"), ApprovalDecision.ALLOW)

@@ -6,7 +6,12 @@ from seecoder.types import ApprovalDecision, Mode
 
 
 # Observation-only tools run in every mode without an approval prompt.
-READ_ONLY_TOOLS = frozenset({"list_files", "read_file", "search_files", "git_diff"})
+READ_ONLY_TOOLS = frozenset(
+    {
+        "list_files", "read_file", "search_files", "search_code", "git_diff", "git_status", "git_log",
+        "list_skills", "web_search",
+    }
+)
 
 
 def is_read_only(tool_name: str) -> bool:

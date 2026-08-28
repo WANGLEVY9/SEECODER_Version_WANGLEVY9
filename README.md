@@ -6,11 +6,12 @@ SEECODER 是面向南京大学软件工程专业推免项目的本地 Coding Age
 
 - 单任务 `run` 与交互式多轮 `chat`，支持保存、恢复和继续会话。
 - 三种工作模式：`auto` 自动执行；`plan` 只读检查并提出变更计划；`ask` 在修改文件或执行命令前请求批准。
-- 10 个本地工具：`list_files`、`read_file`、`search_files`、`write_file`、`apply_patch`、`git_diff`、`run_command`、`search_code`、`spawn_agent`、`web_search`。
+- 13 个本地工具：`list_files`、`read_file`、`search_files`、`write_file`、`apply_patch`、`git_diff`、`git_status`、`git_log`、`run_command`、`search_code`、`spawn_agent`、`web_search`、`list_skills`。
 - 文件工具具备工作区边界、真实路径解析、符号链接逃逸检查、大小限制和原子写入。
 - `run_command` 默认使用受限 argv 白名单，不拼接 shell；`--host-shell` 是显式兼容选项，并且不等同于操作系统沙箱。
 - 同一回合内的只读工具可并行执行；写入和命令操作保持串行以保护因果关系。
 - `search_code` 提供语言无关的确定性符号索引；`spawn_agent` 是有界、禁止递归的本地子 Agent；`web_search` 是可失败降级的本地 urllib 工具。
+- `git_status` 与 `git_log` 使用固定 Git 参数向量，只读展示本地分支、工作树和有限提交历史。可选项目 Skills 位于 `.seecoder/skills/<skill-name>/SKILL.md`，按数量、大小和路径边界加载为项目指引，不能扩大任何工具权限或覆盖安全策略；可用 `list_skills` 查看。
 - 支持 DeepSeek thinking 模式的 `reasoning_content` 保留、流式 token、usage 统计、上下文压缩，以及项目级 `SEECODER.md` / `AGENTS.md` 记忆注入。
 - 每次运行生成脱敏 JSONL trace；模型失败、协议错误、工具错误、上下文超限、步数超限和 Ctrl+C 都有明确结果状态。
 

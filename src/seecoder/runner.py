@@ -15,11 +15,15 @@ from seecoder.context import ContextBudgetExceeded, ContextManager, _turns, esti
 from dataclasses import replace
 
 from seecoder.memory import load_memory_block
+from seecoder.skills import build_skill_block
 from seecoder.model_client import ModelClient, ModelClientError
 from seecoder.tools import (
     ApplyPatchTool,
     GitDiffTool,
+    GitLogTool,
+    GitStatusTool,
     ListFilesTool,
+    ListSkillsTool,
     ReadFileTool,
     RunCommandTool,
     SearchCodeTool,
@@ -155,6 +159,9 @@ class AgentRunner:
             WriteFileTool(boundary),
             ApplyPatchTool(boundary),
             GitDiffTool(boundary),
+            GitStatusTool(boundary),
+            GitLogTool(boundary),
+            ListSkillsTool(boundary),
             RunCommandTool(
                 boundary,
                 default_timeout_s=settings.command_timeout_s,
@@ -175,7 +182,9 @@ class AgentRunner:
             event_sink=event_sink,
             mode=mode,
             approver=approver,
-            memory_block=load_memory_block(workspace),
+            memory_block="\n\n".join(
+                part for part in (load_memory_block(workspace), build_skill_block(workspace)) if part
+            ),
             stream_sink=stream_sink,
             compactor=compactor,
         )

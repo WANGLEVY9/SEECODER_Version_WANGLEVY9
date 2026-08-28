@@ -482,7 +482,11 @@ private struct ToolManagerPanel: View {
         ("list_files", "浏览工作区目录", "只读"),
         ("read_file", "按行读取本地文件", "只读"),
         ("search_files", "搜索文件内容", "只读"),
+        ("search_code", "符号定义检索", "只读"),
         ("git_diff", "读取本地 Git 差异", "只读"),
+        ("git_status", "查看分支与工作树", "只读"),
+        ("git_log", "查看有限本地提交历史", "只读"),
+        ("list_skills", "查看本地 Skill 包", "只读"),
         ("write_file", "在工作区内原子写入", "受策略控制"),
         ("apply_patch", "精确修改工作区文件", "受策略控制"),
         ("run_command", "受限 argv 命令执行", "受策略控制")
@@ -515,12 +519,12 @@ private struct SkillsManagerPanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                InspectorSection(title: "本地 Skills", caption: "仅展示本项目自行实现的能力，不会从远程加载代理框架或服务。") {
+                InspectorSection(title: "本地 Skills", caption: "可在工作区 .seecoder/skills/<名称>/SKILL.md 安装本地 Markdown Skill；数量、大小和路径都会受限。") {
                     ForEach(skills, id: \.0) { skill in
                         ManagementRow(icon: "sparkles", title: skill.0, detail: skill.1, badge: skill.2)
                     }
                 }
-                InspectorSection(title: "扩展边界", caption: "模型只提出工具调用建议；执行、审批、循环终止和错误处理始终在本地 AgentRunner。") {
+                InspectorSection(title: "扩展边界", caption: "模型只提出工具调用建议；Skill 不能新增工具权限。执行、审批、循环终止和错误处理始终在本地 AgentRunner。") {
                     ManagementRow(icon: "lock.shield", title: "合规模式", detail: "不使用 LangChain、LlamaIndex、OpenAI Agents SDK 或托管代码执行服务。", badge: "本地")
                 }
             }

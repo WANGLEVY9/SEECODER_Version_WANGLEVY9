@@ -11,7 +11,10 @@ from pathlib import Path
 from seecoder.tools import (
     ApplyPatchTool,
     GitDiffTool,
+    GitLogTool,
+    GitStatusTool,
     ListFilesTool,
+    ListSkillsTool,
     ReadFileTool,
     RunCommandTool,
     SearchCodeTool,
@@ -232,3 +235,28 @@ class LocalToolsTests(unittest.TestCase):
         result = GitDiffTool(self.boundary).execute({})
         self.assertFalse(result.ok)
         self.assertEqual(result.error.kind, "NotGitRepository")
+
+    def test_git_status_and_log_are_bounded_and_read_only(self) -> None:
+        subprocess.run(["git", "init", "--quiet", str(self.root)], check=True)
+        subprocess.run(["git", "add", "src/sample.txt"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--quiet", "-m", "fixture"],
+            cwd=self.root,
+            check=True,
+        )
+        (self.root / "new.txt").write_text("uncommitted\n", encoding="utf-8")
+        status = GitStatusTool(self.boundary).execute({"max_entries": 1})
+        history = GitLogTool(self.boundary).execute({"max_commits": 1})
+        self.assertTrue(status.ok)
+        self.assertIn("new.txt", "\n".join(status.data["status"]))
+        self.assertTrue(history.ok)
+        self.assertEqual(history.data["commits"][0]["subject"], "fixture")
+
+    def test_list_skills_discovers_only_bounded_local_packages(self) -> None:
+        skill = self.root / ".seecoder" / "skills" / "python-review" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("Prefer focused Python tests.", encoding="utf-8")
+        result = ListSkillsTool(self.boundary).execute({})
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["skills"][0]["name"], "python-review")
+        self.assertEqual(result.data["skills"][0]["path"], ".seecoder/skills/python-review/SKILL.md")
