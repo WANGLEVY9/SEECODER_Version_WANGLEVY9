@@ -19,6 +19,7 @@ desktop/electron/dist/
 # Local agent execution evidence and demo recordings
 runs/
 recordings/
+logs/
 *.mp4
 validation_workspaces/
 
