@@ -1,0 +1,139 @@
+import SwiftUI
+import AppKit
+
+@main
+struct SEECODERDesktopApp: App {
+  @StateObject private var store = DesktopStore()
+
+  var body: some Scene {
+    WindowGroup("SEECODER") { DesktopRoot().environmentObject(store).frame(minWidth: 1120, minHeight: 720) }
+      .windowStyle(.hiddenTitleBar)
+      .commands { CommandGroup(after: .newItem) { Button("新对话") { store.newSession() }.keyboardShortcut("n", modifiers: .command) } }
+  }
+}
+
+struct ChatMessage: Identifiable, Codable, Hashable {
+  enum Role: String, Codable { case user, agent, system }
+  let id: UUID
+  let role: Role
+  let content: String
+  let createdAt: Date
+  init(_ role: Role, _ content: String) { id = UUID(); self.role = role; self.content = content; createdAt = .now }
+}
+
+struct SessionModel: Identifiable, Codable, Hashable {
+  var id = UUID(); var title = "新对话"; var workspace = ""; var messages: [ChatMessage] = []; var updatedAt = Date.now
+}
+
+struct DiffLine: Identifiable, Hashable { let id = UUID(); let kind: Kind; let text: String; enum Kind { case meta, file, hunk, add, remove, context } }
+
+@MainActor
+final class DesktopStore: ObservableObject {
+  @Published var sessions: [SessionModel] = []
+  @Published var selectedID: UUID?
+  @Published var draft = ""
+  @Published var mode = "ask"
+  @Published var isRunning = false
+  @Published var activity = ["桌面端已就绪 · 原生 SwiftUI"]
+  @Published var reviewFile: String?
+  @Published var diffLines: [DiffLine] = []
+  @Published var showCreateWorkspace = false
+  @Published var workspaceParent = ""
+  @Published var workspaceName = ""
+  @Published var workspaceError = ""
+  private var process: Process?
+  private var inputPipe: Pipe?
+  private let persistenceKey = "seecoder.swiftui.sessions.v1"
+
+  init() { load(); if sessions.isEmpty { newSession() }; selectedID = sessions.first?.id }
+  var currentIndex: Int? { sessions.firstIndex { $0.id == selectedID } }
+  var current: SessionModel? { currentIndex.map { sessions[$0] } }
+  var hasWorkspace: Bool { !(current?.workspace ?? "").isEmpty }
+
+  func newSession() { sessions.insert(SessionModel(), at: 0); selectedID = sessions[0].id; reviewFile = nil; diffLines = []; save() }
+  func select(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; reviewFile = nil; diffLines = [] }
+  func chooseWorkspace() {
+    let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "选择开发区域"
+    if panel.runModal() == .OK, let url = panel.url { applyWorkspace(url.path, activityText: "已选择本地工作区") }
+  }
+  func chooseWorkspaceParent() {
+    let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "选择父目录"
+    if panel.runModal() == .OK, let url = panel.url { workspaceParent = url.path; workspaceError = "" }
+  }
+  func createWorkspace() {
+    let name = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !workspaceParent.isEmpty, !name.isEmpty, name.count <= 80, !name.contains("/"), !name.contains("\\"), name != ".", name != ".." else { workspaceError = "请选择父目录，并输入有效的单层文件夹名称。"; return }
+    let target = URL(fileURLWithPath: workspaceParent).appendingPathComponent(name)
+    do { try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false); showCreateWorkspace = false; applyWorkspace(target.path, activityText: "已创建本地工作区") }
+    catch { workspaceError = "无法创建该文件夹。请确认名称未被占用且目录可写。" }
+  }
+  func applyWorkspace(_ path: String, activityText: String) { guard let index = currentIndex else { return }; sessions[index].workspace = path; sessions[index].updatedAt = .now; activity.insert(activityText + " · " + shortPath(path), at: 0); reviewFile = nil; diffLines = []; save() }
+  func openCreateWorkspace() { workspaceParent = ""; workspaceName = ""; workspaceError = ""; showCreateWorkspace = true }
+  func send() {
+    let task = draft.trimmingCharacters(in: .whitespacesAndNewlines); guard !task.isEmpty, hasWorkspace, !isRunning, let index = currentIndex else { return }
+    sessions[index].messages.append(ChatMessage(.user, task)); sessions[index].title = sessions[index].title == "新对话" ? String(task.prefix(24)) : sessions[index].title; sessions[index].updatedAt = .now; draft = ""; isRunning = true; activity.insert("正在启动本地 AgentRunner", at: 0); save()
+    if let process, process.isRunning, let inputPipe {
+      do { try inputPipe.fileHandleForWriting.write(contentsOf: Data((task + "\n").utf8)); return }
+      catch { self.process = nil; self.inputPipe = nil }
+    }
+    let sessionID = sessions[index].id.uuidString; let workspace = sessions[index].workspace; let storage = sessionStorageURL(id: sessionID).path
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = ["uv", "run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage, "--mode", mode]
+    let input = Pipe(); let output = Pipe(); let error = Pipe(); p.standardInput = input; p.standardOutput = output; p.standardError = error; process = p; inputPipe = input
+    output.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.consume(String(decoding: data, as: UTF8.self)) } }
+    error.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.activity.insert("CLI: " + String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), at: 0) } }
+    p.terminationHandler = { [weak self] _ in Task { @MainActor in self?.isRunning = false; self?.process = nil; self?.inputPipe = nil; self?.save() } }
+    do { try p.run(); try input.fileHandleForWriting.write(contentsOf: Data((task + "\n").utf8)) } catch { isRunning = false; append(.system, "无法启动本地 AgentRunner：\(error.localizedDescription)") }
+  }
+  func stop() { process?.terminate(); activity.insert("已请求停止本地任务", at: 0) }
+  func inspectDiff(_ file: String) {
+    guard let workspace = current?.workspace, !workspace.isEmpty else { return }; reviewFile = file
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = ["git", "-C", workspace, "diff", "--no-ext-diff", "--unified=3", "--", file]
+    let pipe = Pipe(); p.standardOutput = pipe
+    do { try p.run(); p.waitUntilExit(); let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); diffLines = text.split(separator: "\n", omittingEmptySubsequences: false).map { classifyDiff(String($0)) } }
+    catch { diffLines = [DiffLine(kind: .context, text: "无法读取本地 Git 差异。")] }
+  }
+  func changedFiles() -> [(String, Int, Int)] {
+    guard let workspace = current?.workspace, !workspace.isEmpty else { return [] }; let result = run("git", ["-C", workspace, "diff", "--numstat"])
+    return result.split(separator: "\n").compactMap { row in let pieces = row.split(separator: "\t", maxSplits: 2); guard pieces.count == 3 else { return nil }; return (String(pieces[2]), Int(pieces[0]) ?? 0, Int(pieces[1]) ?? 0) }
+  }
+  private func consume(_ chunk: String) {
+    for line in chunk.split(separator: "\n") { guard let data = line.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let event = object["event"] as? String, let value = object["data"] as? [String: Any] else { continue }
+      if event == "token", let text = value["text"] as? String { appendStreaming(text) }
+      if event == "turn_outcome" { if let final = value["final_text"] as? String, !final.isEmpty { append(.agent, final) }; isRunning = false; activity.insert("任务完成", at: 0) }
+    }
+  }
+  private func appendStreaming(_ text: String) { guard let index = currentIndex else { return }; if sessions[index].messages.last?.role == .agent { sessions[index].messages[sessions[index].messages.count - 1] = ChatMessage(.agent, sessions[index].messages.last!.content + text) } else { sessions[index].messages.append(ChatMessage(.agent, text)) } }
+  private func append(_ role: ChatMessage.Role, _ text: String) { guard let index = currentIndex else { return }; sessions[index].messages.append(ChatMessage(role, text)); save() }
+  private func run(_ executable: String, _ arguments: [String]) -> String { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = [executable] + arguments; let pipe = Pipe(); p.standardOutput = pipe; do { try p.run(); p.waitUntilExit(); return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) } catch { return "" } }
+  private func classifyDiff(_ text: String) -> DiffLine { let kind: DiffLine.Kind = text.hasPrefix("@@") ? .hunk : text.hasPrefix("+++ ") || text.hasPrefix("--- ") ? .file : text.hasPrefix("+") ? .add : text.hasPrefix("-") ? .remove : text.hasPrefix("diff ") || text.hasPrefix("index ") ? .meta : .context; return DiffLine(kind: kind, text: text) }
+  private func shortPath(_ path: String) -> String { URL(fileURLWithPath: path).lastPathComponent }
+  private func sessionStorageURL(id: String) -> URL { let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SEECODER/sessions", isDirectory: true); try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); return root.appendingPathComponent(id + ".json") }
+  private func save() { if let data = try? JSONEncoder().encode(sessions) { UserDefaults.standard.set(data, forKey: persistenceKey) } }
+  private func load() { if let data = UserDefaults.standard.data(forKey: persistenceKey), let stored = try? JSONDecoder().decode([SessionModel].self, from: data) { sessions = stored } }
+}
+
+struct DesktopRoot: View {
+  @EnvironmentObject var store: DesktopStore
+  var body: some View { HStack(spacing: 0) { Sidebar(); Divider(); Conversation(); Divider(); Inspector() }.background(Color.canvas).sheet(isPresented: $store.showCreateWorkspace) { CreateWorkspaceSheet() } }
+}
+
+struct Sidebar: View {
+  @EnvironmentObject var store: DesktopStore
+  var body: some View { VStack(alignment: .leading, spacing: 14) { HStack { Image("seecoder-logo", bundle: .module).resizable().frame(width: 27, height: 27).clipShape(RoundedRectangle(cornerRadius: 8)); Text("SEECODER").font(.system(size: 16, weight: .bold)); Spacer() }.padding(.bottom, 16); Button(action: store.newSession) { Label("新对话", systemImage: "square.and.pencil") }.buttonStyle(SidebarAction()); Button(action: store.chooseWorkspace) { Label("打开工作区", systemImage: "folder") }.buttonStyle(SidebarAction()); Button(action: store.openCreateWorkspace) { Label("新建工作区", systemImage: "folder.badge.plus") }.buttonStyle(SidebarAction()); Text("项目会话").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 18); ScrollView { LazyVStack(spacing: 4) { ForEach(store.sessions) { session in Button { store.select(session) } label: { VStack(alignment: .leading, spacing: 4) { Text(session.title).lineLimit(1).font(.system(size: 13, weight: .semibold)); Text(session.workspace.isEmpty ? "未选择工作区" : URL(fileURLWithPath: session.workspace).lastPathComponent).lineLimit(1).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(9).background(store.selectedID == session.id ? Color.blue.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain) } } }; Spacer(); Divider(); Label("本地优先", systemImage: "checkmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(.green); Text("会话仅保存在此设备\n不会保存 API key").font(.caption2).foregroundStyle(.secondary) }.padding(18).frame(width: 250).background(Color.sidebar) }
+}
+
+struct Conversation: View {
+  @EnvironmentObject var store: DesktopStore
+  var body: some View { VStack(spacing: 0) { HStack { VStack(alignment: .leading, spacing: 3) { Text(store.current?.title ?? "新对话").font(.headline); Text(store.current?.workspace.isEmpty == false ? store.current!.workspace : "尚未选择本地开发区域").font(.caption).foregroundStyle(.secondary).lineLimit(1) }; Spacer(); Button("选择工作区", action: store.chooseWorkspace).buttonStyle(.bordered) }.padding(.horizontal, 26).frame(height: 72); Divider(); ScrollViewReader { proxy in ScrollView { if store.current?.messages.isEmpty != false { Onboarding() } else { LazyVStack(alignment: .leading, spacing: 22) { ForEach(store.current?.messages ?? []) { message in MessageBubble(message: message) }; ChangeSummary() }.padding(.horizontal, 70).padding(.vertical, 35) } }.onChange(of: store.current?.messages.count) { _, _ in if let id = store.current?.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } } }; Composer() }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.canvas) }
+}
+
+struct Onboarding: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(spacing: 14) { Image("seecoder-logo", bundle: .module).resizable().frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 20)); Text("选择一个开发区域").font(.system(size: 32, weight: .bold)); Text("选择已有本地文件夹，或创建一个新的会话工作区。\n所有本地操作都会限制在你选定的目录中。").multilineTextAlignment(.center).foregroundStyle(.secondary); HStack { Button("选择本地文件夹", action: store.chooseWorkspace).buttonStyle(.borderedProminent); Button("新建会话工作区", action: store.openCreateWorkspace).buttonStyle(.bordered) } }.frame(maxWidth: .infinity, minHeight: 480).padding(.bottom, 70) } }
+struct MessageBubble: View { let message: ChatMessage; var body: some View { VStack(alignment: .leading, spacing: 7) { Label(message.role == .user ? "你" : message.role == .agent ? "SEECODER" : "本地状态", systemImage: message.role == .user ? "person.fill" : "sparkle").font(.caption.weight(.semibold)).foregroundStyle(message.role == .user ? .blue : .green); Text(message.content).textSelection(.enabled).font(.system(size: 14)).lineSpacing(5).padding(15).frame(maxWidth: 760, alignment: .leading).background(message.role == .user ? Color.blue.opacity(0.08) : Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) }.id(message.id) } }
+struct ChangeSummary: View { @EnvironmentObject var store: DesktopStore; var body: some View { let files = store.changedFiles(); if !files.isEmpty { VStack(alignment: .leading, spacing: 8) { Text("已编辑 \(files.count) 个文件").font(.headline); ForEach(files, id: \.0) { file in Button { store.inspectDiff(file.0) } label: { HStack { Text(file.0).font(.system(.caption, design: .monospaced)); Spacer(); Text("+\(file.1) −\(file.2)").font(.caption).foregroundStyle(.secondary) }.padding(.vertical, 5) }.buttonStyle(.plain) } }.padding(15).frame(maxWidth: 760).background(Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) } } }
+struct Composer: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(spacing: 8) { HStack { TextEditor(text: $store.draft).font(.system(size: 14)).frame(minHeight: 68).disabled(!store.hasWorkspace || store.isRunning).overlay(alignment: .topLeading) { if store.draft.isEmpty { Text(store.hasWorkspace ? "描述一个真实的编程任务…" : "先选择或创建一个本地开发区域…").foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false) } }; Button(action: store.send) { Image(systemName: "arrow.up") }.buttonStyle(.borderedProminent).disabled(!store.hasWorkspace || store.isRunning) }; HStack { Picker("模式", selection: $store.mode) { Text("询问").tag("ask"); Text("计划").tag("plan"); Text("自动").tag("auto") }.labelsHidden().frame(width: 86); Text("本地 · 受限执行").font(.caption).foregroundStyle(.secondary); Spacer(); if store.isRunning { Button("停止", action: store.stop).buttonStyle(.bordered) } } }.padding(12).background(.white, in: RoundedRectangle(cornerRadius: 14)).overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.line, lineWidth: 1)).padding(.horizontal, 42).padding(.bottom, 14) } }
+struct Inspector: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(alignment: .leading, spacing: 14) { Text(store.reviewFile == nil ? "运行状态" : "审阅变更").font(.title3.bold()); if let path = store.current?.workspace, !path.isEmpty { Label(URL(fileURLWithPath: path).lastPathComponent, systemImage: "folder").font(.caption).foregroundStyle(.secondary) }; if let file = store.reviewFile { Text(file).font(.caption.monospaced()).foregroundStyle(.secondary); ScrollView { LazyVStack(alignment: .leading, spacing: 0) { ForEach(store.diffLines) { line in Text(line.text.isEmpty ? " " : line.text).font(.system(.caption, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.vertical, 2).background(diffColor(line.kind)) } } }.background(.white, in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.line, lineWidth: 1)) } else { Text("选择一个已编辑文件，即可在此查看本地 Git 差异。\n\n执行轨迹\n" + store.activity.prefix(5).joined(separator: "\n")).font(.caption).foregroundStyle(.secondary).lineSpacing(5); Spacer() } }.padding(20).frame(minWidth: 315, maxWidth: 315, maxHeight: .infinity, alignment: .topLeading).background(Color.inspector) }
+  private func diffColor(_ kind: DiffLine.Kind) -> Color { switch kind { case .add: .green.opacity(0.12); case .remove: .red.opacity(0.10); case .file, .hunk: .blue.opacity(0.09); default: .clear } }
+}
+struct CreateWorkspaceSheet: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(alignment: .leading, spacing: 14) { Text("新建会话工作区").font(.title2.bold()); Text("选择父目录并输入名称。SEECODER 仅创建这一个空文件夹。").font(.subheadline).foregroundStyle(.secondary); HStack { Text(store.workspaceParent.isEmpty ? "尚未选择父目录" : store.workspaceParent).font(.caption.monospaced()).lineLimit(1); Spacer(); Button("选择位置", action: store.chooseWorkspaceParent) }.padding(10).background(Color.canvas, in: RoundedRectangle(cornerRadius: 8)); TextField("例如 my-feature", text: $store.workspaceName).textFieldStyle(.roundedBorder); if !store.workspaceError.isEmpty { Text(store.workspaceError).font(.caption).foregroundStyle(.red) }; HStack { Spacer(); Button("取消") { store.showCreateWorkspace = false }; Button("创建并开始", action: store.createWorkspace).buttonStyle(.borderedProminent) } }.padding(26).frame(width: 460) } }
+struct SidebarAction: ButtonStyle { func makeBody(configuration: Configuration) -> some View { configuration.label.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8).padding(.horizontal, 9).background(configuration.isPressed ? Color.blue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7)) } }
+extension Color { static let canvas = Color(red: 0.985, green: 0.978, blue: 0.965); static let sidebar = Color(red: 0.958, green: 0.965, blue: 0.965); static let inspector = Color(red: 0.975, green: 0.969, blue: 0.957); static let line = Color(red: 0.86, green: 0.89, blue: 0.89) }

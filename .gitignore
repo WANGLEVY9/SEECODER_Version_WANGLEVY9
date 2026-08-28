@@ -24,3 +24,4 @@ validation_workspaces/
 
 # Operating system files
 .DS_Store
+desktop/swiftui/.build/

@@ -49,23 +49,19 @@ uv run seecoder chat --workspace demo_workspace --mode ask \
 
 使用 `uv run seecoder --help`、`uv run seecoder run --help` 或 `uv run seecoder chat --help` 查看完整选项。`--event-json` 会输出供桌面端使用的本地 JSONL 事件协议；`--trace-dir` 应位于工作区之外。
 
-## Electron 桌面端
+## 原生 macOS 桌面端
 
-推荐使用 Electron + 原生 HTML/CSS/JavaScript 桌面界面。首次新建会话时可选择已有本地文件夹，或选择父目录并创建一个新的空会话工作区；文件夹名会经过单目录组件校验，桌面端不会向其他位置写入文件。每个项目会话连接一个本地 `seecoder chat` 进程，后续任务会延续同一模型上下文、工具回合与审批状态；消息记录可独立滚动，输入框固定在底部。界面采用会话、工作区、审阅三栏：包含项目会话列表、工作区选择、任务建议卡片、模式切换、token 统计、实时执行轨迹、Markdown 安全渲染，以及可刷新工作区、分支和变更统计的环境信息。点击“已编辑文件”卡片或右侧“审阅”可在只读本地 Git 差异面板中定位单个文件；主进程只接受工作区内相对路径，并以 `git diff --no-ext-diff` 获取结构化差异行，不读取文件内容、不调用外部 diff 程序。界面不读取、不显示、不持久化 API key。
+推荐使用 SwiftUI 原生 macOS 桌面端，位于 `desktop/swiftui/`，不依赖 Electron、Node 或第三方 UI 组件库。首次新建会话时可选择已有本地文件夹，或选择父目录并创建一个新的空会话工作区；文件夹名会经过单目录组件校验，桌面端不会向其他位置写入文件。每个项目会话连接一个本地 `seecoder chat` 进程，后续任务会延续同一模型上下文、工具回合与审批状态；消息记录可独立滚动，输入框固定在底部。界面采用会话、工作区、审阅三栏：包含项目会话列表、工作区选择、模式切换、实时执行轨迹与只读本地 Git 差异面板。界面不读取、不显示、不持久化 API key。
 
-首次安装需要 Node.js 22.12+：
+首次运行需要 macOS 14+ 与 Swift 6：
 
 ```bash
-node --version
-cd desktop/electron
-npm install
-cd ../..
-./desktop/run_desktop_electron.sh
+./desktop/run_desktop_native.sh
 ```
 
-Electron 主进程使用 `contextIsolation`、`sandbox`、`nodeIntegration: false` 和 `shell: false`，只把任务与工作区作为字面参数数组传给 `uv run seecoder ... --event-json`。无 Node 环境时仍可使用 Tk 兼容端：`./desktop/run_desktop.sh`。
+SwiftUI 端不加载网页或远程 UI 服务；它将工作区与任务作为 `Process` 的字面参数调用本地 CLI。现有 Electron 端保留在 `desktop/electron/` 作为兼容实现，但不再是推荐入口；无 SwiftUI 环境时仍可使用 Tk 兼容端：`./desktop/run_desktop.sh`。
 
-Electron 的主进程不支持热更新。更新 `desktop/electron/main.cjs`、`preload.cjs` 或本地 IPC 后，请完全退出所有 SEECODER 窗口，再重新执行启动脚本；界面会在启动时检查本地 Git 审阅接口，并在内核版本不匹配时给出明确提示。
+原生桌面端更新后请退出并重新运行启动脚本。Electron 兼容端的主进程不支持热更新，若仍使用它，更新 `desktop/electron/main.cjs`、`preload.cjs` 或本地 IPC 后也需要完全退出并重启。
 
 ## 验证
 
@@ -77,7 +73,7 @@ cd desktop/electron && npm test
 cd ../.. && PYTHONPATH=src python3.12 -m unittest discover -s desktop -v
 ```
 
-当前回归基线为 Python 后端 65/65、Electron 边界测试 8/8、Tk 兼容端 3/3；另有 JavaScript 语法、Python 编译和启动脚本检查。P0–P5 的设计、边界分析和受控模型验证记录见 [docs/](docs/)。
+当前回归基线为 Python 后端 65/65、SwiftUI 原生端编译通过、Electron 兼容端边界测试 8/8、Tk 兼容端 3/3；另有 JavaScript 语法、Python 编译和启动脚本检查。P0–P5 的设计、边界分析和受控模型验证记录见 [docs/](docs/)。
 
 `demo_workspace` 初始故意包含失败的 `normalize_tag` 测试，用于演示 Agent 搜索代码、提出或执行补丁、运行受限测试、查看 Git diff 并总结结果。
 
