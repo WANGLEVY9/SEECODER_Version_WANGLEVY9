@@ -5,7 +5,7 @@ const { spawn, execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const path = require("node:path");
 const fs = require("node:fs/promises");
-const { buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff, desktopCapabilities } = require("./core.cjs");
+const { buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff, desktopCapabilities, validateWorkspaceFolderName } = require("./core.cjs");
 
 const projectRoot = path.resolve(__dirname, "../..");
 let mainWindow;
@@ -86,6 +86,31 @@ app.on("window-all-closed", () => {
 ipcMain.handle("seecoder:choose-workspace", async () => {
   const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "createDirectory"] });
   return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle("seecoder:choose-workspace-parent", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle("seecoder:create-workspace", async (_event, payload) => {
+  const rawParent = payload?.parentPath;
+  const name = validateWorkspaceFolderName(payload?.name);
+  if (typeof rawParent !== "string" || !rawParent.trim() || !name) return { ok: false, error: "请输入有效的文件夹名称，并选择父目录。" };
+  const parent = path.resolve(rawParent);
+  try {
+    if (!(await fs.stat(parent)).isDirectory()) return { ok: false, error: "父目录不可用。" };
+  } catch {
+    return { ok: false, error: "父目录不可用。" };
+  }
+  const target = path.resolve(parent, name);
+  if (path.dirname(target) !== parent) return { ok: false, error: "新文件夹必须直接位于所选父目录中。" };
+  try {
+    await fs.mkdir(target);
+    return { ok: true, workspace: target };
+  } catch (error) {
+    return { ok: false, error: error?.code === "EEXIST" ? "同名文件夹已存在。" : "无法创建该文件夹。" };
+  }
 });
 
 ipcMain.handle("seecoder:capabilities", () => desktopCapabilities());

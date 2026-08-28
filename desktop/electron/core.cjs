@@ -75,4 +75,9 @@ function desktopCapabilities() {
   return { protocolVersion: 2, features: ["local_git_diff"] };
 }
 
-module.exports = { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff, desktopCapabilities };
+function validateWorkspaceFolderName(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  return name && name.length <= 80 && name !== "." && name !== ".." && !/[\\/\0]/.test(name) ? name : null;
+}
+
+module.exports = { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff, desktopCapabilities, validateWorkspaceFolderName };

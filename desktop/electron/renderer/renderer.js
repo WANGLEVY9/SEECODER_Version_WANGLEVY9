@@ -1,7 +1,7 @@
 "use strict";
 
 const STORAGE_KEY = "seecoder-electron-sessions-v1";
-const defaultWorkspace = "demo_workspace";
+const defaultWorkspace = "";
 const SUGGESTIONS = [
   { icon: "🔎", label: "探索并理解代码", task: "请先通读当前工作区的核心源码，梳理模块结构，并解释数据是如何流动的。" },
   { icon: "🧩", label: "构建新功能、应用或工具", task: "查看当前工作区结构与依赖，实现一个小而完整的新功能，并运行测试验证。" },
@@ -30,6 +30,11 @@ const reviewFiles = $('#review-files');
 const reviewSummary = $('#review-summary');
 const diffTitle = $('#diff-title');
 const diffView = $('#diff-view');
+const workspaceDialog = $('#workspace-dialog');
+const workspaceParentLabel = $('#workspace-parent-label');
+const workspaceName = $('#workspace-name');
+const workspaceDialogError = $('#workspace-dialog-error');
+let selectedWorkspaceParent = '';
 
 function loadSessions() {
   try {
@@ -49,7 +54,7 @@ function renderSessions() {
   state.sessions.slice().sort((a, b) => b.updatedAt - a.updatedAt).forEach((session) => {
     const button = document.createElement('button');
     button.className = 'session-item' + (session.id === state.currentId ? ' active' : '');
-    button.innerHTML = '<span class="session-item-icon">◌</span><span><strong>' + escapeText(session.title) + '</strong><small>' + escapeText(shortPath(session.workspace)) + '</small></span>';
+    button.innerHTML = '<span class="session-item-icon">◌</span><span><strong>' + escapeText(session.title) + '</strong><small>' + escapeText(session.workspace ? shortPath(session.workspace) : '未选择工作区') + '</small></span>';
     button.addEventListener('click', () => { if (!state.running) { state.currentId = session.id; state.review = { open: false, path: null, lines: [], loading: false, error: '' }; setReviewOpen(false); persist(); render(); renderEnvironment(); } });
     sessionList.append(button);
   });
@@ -87,18 +92,29 @@ function changeCard(environment) {
   return '<section class="change-card"><header><div class="change-icon">▣</div><div><strong>已编辑 ' + environment.files.length + ' 个文件</strong><small><b>+' + environment.added + '</b> −' + environment.deleted + '</small></div></header><ul>' + files + (remaining > 0 ? '<li class="more-files">另有 ' + remaining + ' 个文件</li>' : '') + '</ul></section>';
 }
 function renderWelcome() {
+  const session = current();
+  if (!session?.workspace) {
+    conversation.innerHTML = '<section class="workspace-onboarding"><div class="onboarding-mark"><img src="assets/seecoder-logo.png" alt="SEECODER" /></div><span class="eyebrow">本地 Coding Agent</span><h1>先选择一个开发区域</h1><p>选择已有文件夹，或在本地创建一个新的会话工作区。所有代码读取、修改、命令和 Git 操作都会限制在你选定的目录中。</p><div class="onboarding-actions"><button class="onboarding-primary" data-workspace-action="open">⌁ 选择本地文件夹</button><button class="onboarding-secondary" data-workspace-action="create">＋ 新建会话工作区</button></div><small>工作区可随时在顶部或左侧切换。</small></section>';
+    conversation.querySelectorAll('[data-workspace-action]').forEach((button) => button.addEventListener('click', () => button.dataset.workspaceAction === 'open' ? chooseWorkspace() : openWorkspaceDialog()));
+    return;
+  }
   const cards = SUGGESTIONS.map((item) => '<button class="suggestion-card" data-task="' + escapeText(item.task) + '"><span class="s-icon">' + item.icon + '</span>' + escapeText(item.label) + '</button>').join('');
   conversation.innerHTML = '<section class="welcome"><div><div class="welcome-mark"><img src="assets/seecoder-logo.png" alt="SEECODER" /></div><h1>从一个真实任务开始</h1><p>选择你的工作区，描述希望完成的修改。SEECODER 会在本地读取文件、执行受限命令并给出可审计的结果。</p><div class="suggestion-grid">' + cards + '</div><span class="hint">⌘ ↵ 发送任务</span></div></section>';
   conversation.querySelectorAll('.suggestion-card').forEach((card) => card.addEventListener('click', () => { taskInput.value = card.dataset.task; taskInput.focus(); }));
 }
 function renderConversation() {
-  const session = current(); $('#session-title').textContent = session.title; $('#workspace-label').textContent = session.workspace === defaultWorkspace ? '默认演示工作区 · demo_workspace' : session.workspace;
+  const session = current(); $('#session-title').textContent = session.title; $('#workspace-label').textContent = session.workspace || '尚未选择本地开发区域';
   if (!session.messages.length) { renderWelcome(); return; }
   conversation.innerHTML = session.messages.map((message) => { const label = { user: '你', agent: 'SEECODER', system: '本地状态' }[message.role] || '本地状态'; const body = message.role === 'agent' ? markdownToHtml(message.content) : escapeText(message.content); return '<article class="message ' + message.role + '"><div class="message-meta"><span class="dot"></span>' + label + '</div><div class="message-body' + (message.role === 'agent' ? ' markdown' : '') + '">' + body + '</div></article>'; }).join('') + changeCard(session.environment);
   conversation.querySelectorAll('[data-diff-path]').forEach((button) => button.addEventListener('click', () => openReview(button.dataset.diffPath)));
   conversation.scrollTop = conversation.scrollHeight;
 }
-function render() { renderSessions(); renderConversation(); renderReview(); }
+function updateComposerAvailability() {
+  const hasWorkspace = Boolean(current()?.workspace);
+  if (!state.running) { sendButton.disabled = !hasWorkspace; taskInput.disabled = !hasWorkspace; }
+  taskInput.placeholder = hasWorkspace ? '描述一个真实的编程任务…' : '先选择或创建一个本地开发区域…';
+}
+function render() { renderSessions(); renderConversation(); renderReview(); updateComposerAvailability(); }
 let liveAgentEl = null;
 function ensureLiveAgent() {
   if (!liveAgentEl) {
@@ -109,7 +125,7 @@ function ensureLiveAgent() {
   return liveAgentEl;
 }
 function addActivity(title, detail = '', kind = '') { const entry = document.createElement('div'); entry.className = 'activity-entry ' + kind; entry.innerHTML = '<strong>' + escapeText(title) + '</strong>' + (detail ? '<small>' + escapeText(detail) + '</small>' : ''); activityList.prepend(entry); }
-function setRunning(running) { state.running = running; sendButton.disabled = running; stopButton.disabled = !running; taskInput.disabled = running; if (modeSelect) modeSelect.disabled = running; if (!running) hideApproval(); setBadge(running ? '运行中' : '就绪', running ? 'running' : 'ready'); }
+function setRunning(running) { state.running = running; sendButton.disabled = running || !current()?.workspace; stopButton.disabled = !running; taskInput.disabled = running || !current()?.workspace; if (modeSelect) modeSelect.disabled = running; if (!running) hideApproval(); setBadge(running ? '运行中' : '就绪', running ? 'running' : 'ready'); }
 function showApproval(text, onApprove, onDeny) {
   approvalText.textContent = text; approvalBanner.hidden = false;
   const approveBtn = $('#approve-btn'); const denyBtn = $('#deny-btn');
@@ -189,7 +205,17 @@ async function refreshEnvironment() {
   try { session.environment = await window.seecoderDesktop.inspectEnvironment(session.workspace); persist(); renderEnvironment(); renderConversation(); renderReview(); }
   catch { session.environment = { isRepository: false, files: [] }; renderEnvironment(); }
 }
-async function chooseWorkspace() { const picked = await window.seecoderDesktop.chooseWorkspace(); if (!picked) return; current().workspace = picked; current().environment = null; current().updatedAt = Date.now(); state.review = { open: false, path: null, lines: [], loading: false, error: '' }; setReviewOpen(false); persist(); render(); addActivity('已选择工作区', shortPath(picked), 'ok'); await refreshEnvironment(); }
+async function applyWorkspace(picked, activityTitle) { if (!picked) return; current().workspace = picked; current().environment = null; current().updatedAt = Date.now(); state.review = { open: false, path: null, lines: [], loading: false, error: '' }; setReviewOpen(false); persist(); render(); addActivity(activityTitle, shortPath(picked), 'ok'); await refreshEnvironment(); taskInput.focus(); }
+async function chooseWorkspace() { await applyWorkspace(await window.seecoderDesktop.chooseWorkspace(), '已选择工作区'); }
+function openWorkspaceDialog() { if (state.running) return; workspaceDialogError.textContent = ''; workspaceName.value = ''; selectedWorkspaceParent = ''; workspaceParentLabel.textContent = '尚未选择'; workspaceDialog.showModal(); }
+async function chooseWorkspaceParent() { const picked = await window.seecoderDesktop.chooseWorkspaceParent(); if (!picked) return; selectedWorkspaceParent = picked; workspaceParentLabel.textContent = picked; workspaceDialogError.textContent = ''; }
+async function createWorkspace() {
+  const name = workspaceName.value.trim();
+  if (!selectedWorkspaceParent || !name) { workspaceDialogError.textContent = '请先选择父目录并输入文件夹名称。'; return; }
+  const result = await window.seecoderDesktop.createWorkspace({ parentPath: selectedWorkspaceParent, name });
+  if (!result?.ok) { workspaceDialogError.textContent = result?.error || '无法创建工作区。'; return; }
+  workspaceDialog.close(); await applyWorkspace(result.workspace, '已新建工作区');
+}
 async function sendTask() {
   const task = taskInput.value.trim(); const session = current(); if (!task || state.running) return; if (!session.workspace) return;
   appendMessage('user', task); taskInput.value = ''; activityList.innerHTML = ''; hideApproval(); render(); renderEnvironment(); setRunning(true); addActivity('启动本地 AgentRunner', '模式：' + state.mode + ' · 受限 argv 执行', 'ok');
@@ -236,11 +262,12 @@ function handleRunnerEvent(payload) {
 }
 
 $('#new-session').addEventListener('click', () => { if (state.running) return; hideApproval(); state.sessions.unshift(makeSession(current()?.workspace || defaultWorkspace)); state.currentId = state.sessions[0].id; state.review = { open: false, path: null, lines: [], loading: false, error: '' }; setReviewOpen(false); persist(); render(); renderEnvironment(); taskInput.focus(); });
-$('#choose-workspace').addEventListener('click', chooseWorkspace); $('#top-workspace').addEventListener('click', chooseWorkspace); $('#composer-workspace').addEventListener('click', chooseWorkspace); sendButton.addEventListener('click', sendTask);
+$('#choose-workspace').addEventListener('click', chooseWorkspace); $('#top-workspace').addEventListener('click', chooseWorkspace); $('#composer-workspace').addEventListener('click', chooseWorkspace); $('#create-workspace').addEventListener('click', openWorkspaceDialog); sendButton.addEventListener('click', sendTask);
 stopButton.addEventListener('click', async () => { const session = current(); const r = session ? await window.seecoderDesktop.stopChat(session.id) : null; if (r?.stopped) addActivity('已请求停止', '正在终止本地会话'); });
 if (modeSelect) modeSelect.addEventListener('change', () => { state.mode = modeSelect.value; addActivity('切换工作模式', state.mode); });
 taskInput.addEventListener('keydown', (event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); sendTask(); } });
 $('#about-button').addEventListener('click', () => $('#about-dialog').showModal()); $('#close-about').addEventListener('click', () => $('#about-dialog').close());
+$('#close-workspace-dialog').addEventListener('click', () => workspaceDialog.close()); $('#cancel-workspace').addEventListener('click', () => workspaceDialog.close()); $('#choose-workspace-parent').addEventListener('click', chooseWorkspaceParent); $('#confirm-workspace').addEventListener('click', createWorkspace);
 $('#refresh-environment').addEventListener('click', refreshEnvironment);
 $('#open-review').addEventListener('click', () => { setReviewOpen(true); renderReview(); });
 $('#close-review').addEventListener('click', () => setReviewOpen(false));

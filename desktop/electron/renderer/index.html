@@ -13,6 +13,7 @@
         <div class="brand-row"><span class="brand-mark"><img src="assets/seecoder-logo.png" alt="SEECODER" /></span><span>SEECODER</span><button class="icon-button muted" aria-label="展开菜单">⌄</button></div>
         <button id="new-session" class="navigation-action"><span>＋</span> 新对话 <kbd>⌘ N</kbd></button>
         <button id="choose-workspace" class="navigation-action"><span>⌁</span> 打开工作区</button>
+        <button id="create-workspace" class="navigation-action"><span>▣</span> 新建工作区</button>
         <section class="session-section">
           <div class="section-caption">项目会话</div>
           <div id="session-list" class="session-list" aria-label="本地会话列表"></div>
@@ -69,6 +70,16 @@
       <h2>界面与 Agent 内核分离</h2>
       <p>Electron 仅负责本地桌面渲染和交互。它通过受控的本机子进程调用现有 CLI；上下文、工具 schema、文件读写、命令执行、错误处理和停止条件仍全部由 Python 自研实现。</p>
       <p>界面不读取、不显示、不持久化 API key，也不会启用 <code>--host-shell</code>。可在 自动 / 计划 / 询问 三种模式下运行：计划模式先给出方案再批准执行，询问模式在每一步写文件或运行命令前征求你的同意。</p>
+    </dialog>
+    <dialog id="workspace-dialog" class="workspace-dialog">
+      <button id="close-workspace-dialog" class="close-dialog" aria-label="关闭">×</button>
+      <span class="eyebrow">本地开发区域</span>
+      <h2>新建会话工作区</h2>
+      <p>选择父目录并输入名称。SEECODER 只会创建这一个空文件夹，不会写入其他文件。</p>
+      <label>父目录<button id="choose-workspace-parent" class="dialog-choice">选择本地位置</button><span id="workspace-parent-label" class="workspace-parent-label">尚未选择</span></label>
+      <label>文件夹名称<input id="workspace-name" maxlength="80" placeholder="例如 my-feature" autocomplete="off" /></label>
+      <p id="workspace-dialog-error" class="workspace-dialog-error" role="alert"></p>
+      <div class="dialog-actions"><button id="cancel-workspace" class="dialog-secondary">取消</button><button id="confirm-workspace" class="dialog-primary">创建并开始</button></div>
     </dialog>
     <script src="renderer.js"></script>
   </body>

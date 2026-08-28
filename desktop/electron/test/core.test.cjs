@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff, desktopCapabilities } = require("../core.cjs");
+const { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff, desktopCapabilities, validateWorkspaceFolderName } = require("../core.cjs");
 
 test("backend invocation is literal argv and never enables host shell", () => {
   const result = buildBackendInvocation("/usr/local/bin/uv", "inspect files", "/tmp/workspace");
@@ -54,4 +54,9 @@ test("unified diff parser classifies lines for the local review panel", () => {
 
 test("desktop capability handshake advertises local Git review", () => {
   assert.deepEqual(desktopCapabilities(), { protocolVersion: 2, features: ["local_git_diff"] });
+});
+
+test("workspace creator accepts only one safe directory component", () => {
+  assert.equal(validateWorkspaceFolderName("  my-feature  "), "my-feature");
+  for (const value of ["", ".", "..", "a/b", "a\\b", "\0hidden"]) assert.equal(validateWorkspaceFolderName(value), null);
 });
