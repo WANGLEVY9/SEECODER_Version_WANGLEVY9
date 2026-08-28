@@ -245,6 +245,10 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
             _print_outcome(outcome, quiet=args.quiet)
         if outcome.state == RunState.PLAN_PROPOSED and not args.auto_approve:
             prompt = "Approve the proposed plan and execute it? (y/N): "
+            if args.event_json:
+                print(json.dumps({"event": "plan_approval_request", "data": {
+                    "message": "Plan mode produced a mutation plan. Approve it to execute locally.",
+                }}, ensure_ascii=False), flush=True)
             if sys.stdin.isatty():
                 reply = input(prompt)
             else:
