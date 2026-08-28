@@ -334,8 +334,237 @@ struct ExecutionTimeline: View {
   private func color(_ tone: TimelineEvent.Tone) -> Color { switch tone { case .running: .brandBlue; case .success: .brandGreen; case .warning: .brandAmber; case .failure: .red; case .info: .muted } }
 }
 struct ChangeSummary: View { @EnvironmentObject var store: DesktopStore; var body: some View { let files = store.changedFiles(); if !files.isEmpty { VStack(alignment: .leading, spacing: 8) { Text("已编辑 \(files.count) 个文件").font(.headline); ForEach(files, id: \.0) { file in Button { store.inspectDiff(file.0) } label: { HStack { Text(file.0).font(.system(.caption, design: .monospaced)); Spacer(); Text("+\(file.1) −\(file.2)").font(.caption).foregroundStyle(.secondary) }.padding(.vertical, 5) }.buttonStyle(.plain) } }.padding(15).frame(maxWidth: 760).background(Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) } } }
-struct Composer: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(spacing: 8) { HStack(alignment: .bottom, spacing: 10) { TextEditor(text: $store.draft).font(.system(size: 14)).foregroundStyle(Color.ink).scrollContentBackground(.hidden).background(Color.white).frame(height: 68).disabled(store.isRunning).overlay(alignment: .topLeading) { if store.draft.isEmpty { Text(store.hasWorkspace ? "描述一个真实的编程任务…" : "可先描述任务，选择工作区后即可发送…").foregroundStyle(Color.muted).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false) } }; Button(action: store.send) { Image(systemName: "arrow.up") }.buttonStyle(.borderedProminent).disabled(!store.hasWorkspace || store.isRunning) }; HStack { Picker("模式", selection: $store.mode) { Text("Ask").tag("ask"); Text("Plan").tag("plan"); Text("Auto Mode").tag("auto") }.labelsHidden().frame(width: 112); Text(store.hasWorkspace ? "本地 · 受限执行" : "选择工作区后发送").font(.caption).foregroundStyle(Color.muted); Spacer(); if store.isRunning { Button("停止", action: store.stop).buttonStyle(.bordered) } } }.padding(11).frame(maxWidth: 720).background(.white, in: RoundedRectangle(cornerRadius: 13)).overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.line, lineWidth: 1)).frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.bottom, 12) } }
-struct Inspector: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(alignment: .leading, spacing: 14) { Text(store.reviewFile == nil ? "运行状态" : "审阅变更").font(.title3.bold()); if let path = store.current?.workspace, !path.isEmpty { Label(URL(fileURLWithPath: path).lastPathComponent, systemImage: "folder").font(.caption).foregroundStyle(Color.muted) }; if let file = store.reviewFile { Text(file).font(.caption.monospaced()).foregroundStyle(Color.muted); ScrollView { LazyVStack(alignment: .leading, spacing: 0) { ForEach(store.diffLines) { line in Text(line.text.isEmpty ? " " : line.text).font(.system(.caption, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.vertical, 2).background(diffColor(line.kind)) } } }.background(.white, in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.line, lineWidth: 1)) } else { Text(store.isRunning ? "AgentRunner 正在本地执行。每一步都会记录在下方。" : "提交任务后，这里会显示模型请求、工具调用、执行结果与终止状态。").font(.caption).foregroundStyle(Color.muted).lineSpacing(4); if store.pendingApproval != nil { ApprovalCard() }; if store.timeline.isEmpty { Spacer() } else { ScrollView { ExecutionTimeline(compact: true) } } } }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(Color.inspector) }
+struct Composer: View {
+    @EnvironmentObject var store: DesktopStore
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(alignment: .bottom, spacing: 10) {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $store.draft)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.ink)
+                        .scrollContentBackground(.hidden)
+                        .background(Color.white)
+                        .focused($isFocused)
+                        .disabled(store.isRunning)
+
+                    if store.draft.isEmpty && !isFocused {
+                        Text(store.hasWorkspace ? "描述一个真实的编程任务…" : "可先描述任务，选择工作区后即可发送…")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.muted)
+                            .padding(.top, 8)
+                            .padding(.leading, 5)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .frame(height: 68)
+
+                Button(action: store.send) { Image(systemName: "arrow.up") }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!store.hasWorkspace || store.isRunning)
+            }
+
+            HStack {
+                Picker("模式", selection: $store.mode) {
+                    Text("Ask").tag("ask")
+                    Text("Plan").tag("plan")
+                    Text("Auto Mode").tag("auto")
+                }
+                .labelsHidden()
+                .frame(width: 112)
+                Text(store.hasWorkspace ? "本地 · 受限执行" : "选择工作区后发送")
+                    .font(.caption)
+                    .foregroundStyle(Color.muted)
+                Spacer()
+                if store.isRunning { Button("停止", action: store.stop).buttonStyle(.bordered) }
+            }
+        }
+        .padding(11)
+        .frame(maxWidth: 720)
+        .background(.white, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.line, lineWidth: 1))
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 12)
+    }
+}
+
+private enum InspectorPage: String, CaseIterable, Identifiable {
+    case status, tools, skills
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .status: "运行"
+        case .tools: "工具 / MCP"
+        case .skills: "Skills"
+        }
+    }
+}
+
+struct Inspector: View {
+    @EnvironmentObject var store: DesktopStore
+    @State private var page: InspectorPage = .status
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(store.reviewFile == nil ? page.label : "审阅变更")
+                    .font(.title3.bold())
+                Spacer()
+                if store.reviewFile != nil {
+                    Button { store.reviewFile = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.muted)
+                }
+            }
+
+            if let path = store.current?.workspace, !path.isEmpty {
+                Label(URL(fileURLWithPath: path).lastPathComponent, systemImage: "folder")
+                    .font(.caption)
+                    .foregroundStyle(Color.muted)
+            }
+
+            if let file = store.reviewFile {
+                Text(file).font(.caption.monospaced()).foregroundStyle(Color.muted)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(store.diffLines) { line in
+                            Text(line.text.isEmpty ? " " : line.text)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(diffColor(line.kind))
+                        }
+                    }
+                }
+                .background(.white, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.line, lineWidth: 1))
+            } else {
+                Picker("检查器页面", selection: $page) {
+                    ForEach(InspectorPage.allCases) { item in Text(item.label).tag(item) }
+                }
+                .pickerStyle(.segmented)
+
+                switch page {
+                case .status: StatusInspector()
+                case .tools: ToolManagerPanel()
+                case .skills: SkillsManagerPanel()
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.inspector)
+    }
+}
+
+private struct StatusInspector: View {
+    @EnvironmentObject var store: DesktopStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(store.isRunning ? "AgentRunner 正在本地执行。每一步都会记录在下方。" : "提交任务后，这里会显示模型请求、工具调用、执行结果与终止状态。")
+                .font(.caption)
+                .foregroundStyle(Color.muted)
+                .lineSpacing(4)
+            if store.pendingApproval != nil { ApprovalCard() }
+            if store.timeline.isEmpty { Spacer() }
+            else { ScrollView { ExecutionTimeline(compact: true) } }
+        }
+    }
+}
+
+private struct ToolManagerPanel: View {
+    private let localTools = [
+        ("list_files", "浏览工作区目录", "只读"),
+        ("read_file", "按行读取本地文件", "只读"),
+        ("search_files", "搜索文件内容", "只读"),
+        ("git_diff", "读取本地 Git 差异", "只读"),
+        ("write_file", "在工作区内原子写入", "受策略控制"),
+        ("apply_patch", "精确修改工作区文件", "受策略控制"),
+        ("run_command", "受限 argv 命令执行", "受策略控制")
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                InspectorSection(title: "本地 ToolRegistry", caption: "所有工具由 SEECODER 本地定义、解析与执行。") {
+                    ForEach(localTools, id: \.0) { tool in
+                        ManagementRow(icon: "wrench.and.screwdriver", title: tool.0, detail: tool.1, badge: tool.2)
+                    }
+                }
+                InspectorSection(title: "MCP 服务", caption: "当前未连接外部 MCP 服务。") {
+                    ManagementRow(icon: "network", title: "MCP 未启用", detail: "考核版本不依赖托管工具或外部执行服务。", badge: "0 已连接")
+                }
+            }
+        }
+    }
+}
+
+private struct SkillsManagerPanel: View {
+    private let skills = [
+        ("上下文管理", "历史裁剪、长度预算与工具回合保留", "内置"),
+        ("工具安全", "工作区边界、.env 隔离与命令白名单", "内置"),
+        ("代码工作流", "浏览、修改、测试与 Git 差异追踪", "内置"),
+        ("本地记忆", "会话持久化；不会保存 API key", "已启用")
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                InspectorSection(title: "本地 Skills", caption: "仅展示本项目自行实现的能力，不会从远程加载代理框架或服务。") {
+                    ForEach(skills, id: \.0) { skill in
+                        ManagementRow(icon: "sparkles", title: skill.0, detail: skill.1, badge: skill.2)
+                    }
+                }
+                InspectorSection(title: "扩展边界", caption: "模型只提出工具调用建议；执行、审批、循环终止和错误处理始终在本地 AgentRunner。") {
+                    ManagementRow(icon: "lock.shield", title: "合规模式", detail: "不使用 LangChain、LlamaIndex、OpenAI Agents SDK 或托管代码执行服务。", badge: "本地")
+                }
+            }
+        }
+    }
+}
+
+private struct InspectorSection<Content: View>: View {
+    let title: String
+    let caption: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title).font(.headline)
+            Text(caption).font(.caption).foregroundStyle(Color.muted).lineSpacing(3)
+            VStack(spacing: 0, content: content)
+                .background(.white, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.line, lineWidth: 1))
+        }
+    }
+}
+
+private struct ManagementRow: View {
+    let icon: String
+    let title: String
+    let detail: String
+    let badge: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: icon).foregroundStyle(Color.brandBlue).frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.caption.bold()).lineLimit(1)
+                Text(detail).font(.caption2).foregroundStyle(Color.muted).lineLimit(2)
+            }
+            Spacer(minLength: 4)
+            Text(badge).font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.brandGreen)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .overlay(alignment: .bottom) { Divider().padding(.leading, 35) }
+    }
+}
   private func diffColor(_ kind: DiffLine.Kind) -> Color { switch kind { case .add: .green.opacity(0.12); case .remove: .red.opacity(0.10); case .file, .hunk: .blue.opacity(0.09); default: .clear } }
 }
 struct CreateWorkspaceSheet: View {
