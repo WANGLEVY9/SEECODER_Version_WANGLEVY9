@@ -488,6 +488,7 @@ private struct ToolManagerPanel: View {
         ("git_status", "查看分支与工作树", "只读"),
         ("git_log", "查看有限本地提交历史", "只读"),
         ("list_skills", "查看本地 Skill 包", "只读"),
+        ("rename_directory", "重命名工作区内代码目录", "受策略控制"),
         ("write_file", "在工作区内原子写入", "受策略控制"),
         ("apply_patch", "精确修改工作区文件", "受策略控制"),
         ("run_command", "受限 argv 命令执行", "受策略控制")

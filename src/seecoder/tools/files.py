@@ -12,6 +12,7 @@ from seecoder.types import ToolResult
 
 
 _SKIPPED_DIRECTORY_NAMES = {".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache"}
+_PROTECTED_DIRECTORY_NAMES = {".git", ".seecoder", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"}
 _MAX_FILE_CHARS = 12_000
 _MAX_FILE_BYTES = 1_000_000
 _MAX_WRITE_CHARS = 500_000
@@ -248,6 +249,60 @@ class WriteFileTool:
                 "bytes_written": len(content.encode("utf-8")),
                 "created": not existed,
             }
+        )
+
+
+class RenameDirectoryTool:
+    """Rename one non-root workspace directory without invoking a shell."""
+
+    name = "rename_directory"
+    description = (
+        "Rename an existing non-root directory inside the configured workspace. "
+        "Use this for source folders; it cannot rename the workspace root or protected system folders."
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Workspace-relative existing directory to rename"},
+            "new_name": {"type": "string", "description": "New single directory-name component"},
+        },
+        "required": ["path", "new_name"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, boundary: WorkspaceBoundary) -> None:
+        self.boundary = boundary
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        raw_path = _required_string(arguments, "path")
+        new_name = _required_string(arguments, "new_name").strip()
+        if not new_name or len(new_name) > 80 or new_name in {".", ".."} or "/" in new_name or "\\" in new_name:
+            raise ValueError("'new_name' must be a valid single directory-name component of at most 80 characters")
+        if new_name in _PROTECTED_DIRECTORY_NAMES:
+            return ToolResult.failure("ProtectedPath", "Renaming to a protected system-directory name is not allowed")
+
+        requested = Path(raw_path).expanduser()
+        lexical = requested if requested.is_absolute() else self.boundary.root / requested
+        if lexical.is_symlink():
+            return ToolResult.failure("SymlinkPath", "Refusing to rename a symbolic-link directory")
+        source = self.boundary.resolve(raw_path)
+        if source == self.boundary.root:
+            return ToolResult.failure("WorkspaceRoot", "The workspace root is managed by the desktop client and cannot be renamed by the agent")
+        if not source.exists():
+            return ToolResult.failure("NotFound", f"Directory does not exist: {raw_path}")
+        if not source.is_dir():
+            return ToolResult.failure("NotADirectory", f"Path is not a directory: {raw_path}")
+        if any(part in _PROTECTED_DIRECTORY_NAMES for part in source.relative_to(self.boundary.root).parts):
+            return ToolResult.failure("ProtectedPath", "Renaming protected project-system directories is not allowed")
+
+        target = self.boundary.resolve(str(source.parent / new_name))
+        if target == source:
+            return ToolResult.success({"old_path": self.boundary.relative(source), "new_path": self.boundary.relative(target), "changed": False})
+        if target.exists():
+            return ToolResult.failure("AlreadyExists", f"A file or directory already exists at: {self.boundary.relative(target)}")
+        source.rename(target)
+        return ToolResult.success(
+            {"old_path": self.boundary.relative(source.parent / source.name), "new_path": self.boundary.relative(target), "changed": True}
         )
 
 

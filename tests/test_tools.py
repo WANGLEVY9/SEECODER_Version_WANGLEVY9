@@ -16,6 +16,7 @@ from seecoder.tools import (
     ListFilesTool,
     ListSkillsTool,
     ReadFileTool,
+    RenameDirectoryTool,
     RunCommandTool,
     SearchCodeTool,
     SearchFilesTool,
@@ -59,6 +60,26 @@ class LocalToolsTests(unittest.TestCase):
         )
         self.assertFalse(outside.ok)
         self.assertEqual(outside.error.kind, "ValidationError")
+
+    def test_rename_directory_moves_code_folder_inside_workspace(self) -> None:
+        source = self.root / "src" / "legacy"
+        source.mkdir()
+        (source / "module.py").write_text("value = 1\n", encoding="utf-8")
+        result = RenameDirectoryTool(self.boundary).execute({"path": "src/legacy", "new_name": "core"})
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["old_path"], "src/legacy")
+        self.assertEqual(result.data["new_path"], "src/core")
+        self.assertTrue((self.root / "src" / "core" / "module.py").is_file())
+
+    def test_rename_directory_refuses_workspace_root_and_protected_folders(self) -> None:
+        root_result = RenameDirectoryTool(self.boundary).execute({"path": ".", "new_name": "renamed"})
+        protected = self.root / ".git"
+        protected.mkdir()
+        protected_result = RenameDirectoryTool(self.boundary).execute({"path": ".git", "new_name": "old-git"})
+        self.assertFalse(root_result.ok)
+        self.assertEqual(root_result.error.kind, "WorkspaceRoot")
+        self.assertFalse(protected_result.ok)
+        self.assertEqual(protected_result.error.kind, "ProtectedPath")
 
     @unittest.skipIf(os.name == "nt", "symbolic-link test uses POSIX semantics")
     def test_symlink_escape_is_rejected(self) -> None:

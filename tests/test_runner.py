@@ -48,6 +48,7 @@ class AgentRunnerTests(unittest.TestCase):
 
     def test_system_prompt_reserves_workspace_root_rename_for_desktop(self) -> None:
         self.assertIn("desktop application owns selecting, creating, and renaming the workspace root", DEFAULT_SYSTEM_PROMPT.lower())
+        self.assertIn("rename_directory", DEFAULT_SYSTEM_PROMPT)
 
     def test_full_read_write_command_loop(self) -> None:
         (self.workspace / "bug.txt").write_text("broken", encoding="utf-8")

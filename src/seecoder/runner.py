@@ -25,6 +25,7 @@ from seecoder.tools import (
     ListFilesTool,
     ListSkillsTool,
     ReadFileTool,
+    RenameDirectoryTool,
     RunCommandTool,
     SearchCodeTool,
     SearchFilesTool,
@@ -58,8 +59,9 @@ When finished, provide a concise summary of changes, validation, and any remaini
 
 The desktop application owns selecting, creating, and renaming the workspace root directory.
 Do not attempt to rename that root with pwd, ls, mv, or any shell command: use list_files to
-inspect its contents and tell the user to use the desktop workspace menu for the rename. You may
-edit files inside the selected workspace only through the supplied local tools."""
+inspect its contents and tell the user to use the desktop workspace menu for the root rename.
+For a non-root source directory inside the workspace, use rename_directory rather than a shell command.
+You may edit files inside the selected workspace only through the supplied local tools."""
 
 Approver = Callable[[ToolCall], bool]
 EventSink = Callable[[str, dict[str, Any]], None]
@@ -163,6 +165,7 @@ class AgentRunner:
             SearchCodeTool(boundary),
             WriteFileTool(boundary),
             ApplyPatchTool(boundary),
+            RenameDirectoryTool(boundary),
             GitDiffTool(boundary),
             GitStatusTool(boundary),
             GitLogTool(boundary),
