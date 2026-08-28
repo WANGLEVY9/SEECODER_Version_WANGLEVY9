@@ -570,7 +570,6 @@ private struct ManagementRow: View {
     }
 }
   private func diffColor(_ kind: DiffLine.Kind) -> Color { switch kind { case .add: .green.opacity(0.12); case .remove: .red.opacity(0.10); case .file, .hunk: .blue.opacity(0.09); default: .clear } }
-}
 struct CreateWorkspaceSheet: View {
   @EnvironmentObject var store: DesktopStore
   @FocusState private var nameFieldFocused: Bool
