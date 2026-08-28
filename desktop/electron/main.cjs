@@ -5,7 +5,7 @@ const { spawn, execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const path = require("node:path");
 const fs = require("node:fs/promises");
-const { buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff } = require("./core.cjs");
+const { buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff, desktopCapabilities } = require("./core.cjs");
 
 const projectRoot = path.resolve(__dirname, "../..");
 let mainWindow;
@@ -87,6 +87,8 @@ ipcMain.handle("seecoder:choose-workspace", async () => {
   const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory", "createDirectory"] });
   return result.canceled ? null : result.filePaths[0];
 });
+
+ipcMain.handle("seecoder:capabilities", () => desktopCapabilities());
 
 async function gitOutput(workspace, args) {
   try {

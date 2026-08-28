@@ -71,4 +71,8 @@ function parseUnifiedDiff(diff = "") {
   });
 }
 
-module.exports = { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff };
+function desktopCapabilities() {
+  return { protocolVersion: 2, features: ["local_git_diff"] };
+}
+
+module.exports = { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff, desktopCapabilities };

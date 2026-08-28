@@ -3,6 +3,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("seecoderDesktop", {
+  getCapabilities: () => ipcRenderer.invoke("seecoder:capabilities"),
   chooseWorkspace: () => ipcRenderer.invoke("seecoder:choose-workspace"),
   inspectEnvironment: (workspace) => ipcRenderer.invoke("seecoder:inspect-environment", workspace),
   readDiff: (payload) => ipcRenderer.invoke("seecoder:read-diff", payload),

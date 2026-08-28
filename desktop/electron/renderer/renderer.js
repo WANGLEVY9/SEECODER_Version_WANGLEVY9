@@ -8,7 +8,7 @@ const SUGGESTIONS = [
   { icon: "🧐", label: "审查代码并提出修改建议", task: "审查当前工作区的代码质量，指出潜在 bug、边界与安全问题，并给出可落地的修改建议。" },
   { icon: "🔥", label: "修复问题和失败", task: "定位当前工作区里失败的测试或缺陷，做最小修复，然后运行测试确认通过。" },
 ];
-const state = { sessions: loadSessions(), currentId: null, running: false, mode: "ask", usageTotal: 0, lastRun: null, review: { open: false, path: null, lines: [], loading: false, error: "" } };
+const state = { sessions: loadSessions(), currentId: null, running: false, mode: "ask", usageTotal: 0, lastRun: null, reviewAvailable: false, desktopMessage: '正在检查桌面内核…', review: { open: false, path: null, lines: [], loading: false, error: "" } };
 
 const $ = (selector) => document.querySelector(selector);
 const sessionList = $('#session-list');
@@ -148,9 +148,30 @@ function renderReview() {
 function setReviewOpen(open) {
   state.review.open = open; reviewPane.hidden = !open; activityContent.hidden = open; appShell.classList.toggle('review-open', open);
 }
+function desktopRestartMessage() {
+  return '当前窗口连接的是旧版桌面内核，尚未加载本地差异接口。请完全退出所有 SEECODER 窗口后重新运行 desktop/run_desktop_electron.sh。';
+}
+function normalizeReviewError(error) {
+  const message = error?.message || String(error || '无法读取本地差异。');
+  return /No handler registered|is not a function|seecoder:read-diff/.test(message) ? desktopRestartMessage() : message;
+}
+async function verifyDesktopCapabilities() {
+  try {
+    const result = await window.seecoderDesktop.getCapabilities();
+    const features = Array.isArray(result?.features) ? result.features : [];
+    state.reviewAvailable = Number(result?.protocolVersion) >= 2 && features.includes('local_git_diff');
+    state.desktopMessage = state.reviewAvailable ? '本地 Git 审阅已就绪。' : desktopRestartMessage();
+  } catch {
+    state.reviewAvailable = false; state.desktopMessage = desktopRestartMessage();
+  }
+  renderReview();
+}
 async function openReview(rawPath) {
   const session = current(); if (!session?.workspace || !rawPath) return;
   setReviewOpen(true);
+  if (!state.reviewAvailable) {
+    state.review = { open: true, path: rawPath, lines: [], loading: false, error: state.desktopMessage || desktopRestartMessage() }; renderReview(); return;
+  }
   state.review = { open: true, path: rawPath, lines: [], loading: true, error: '' }; renderReview();
   try {
     const result = await window.seecoderDesktop.readDiff({ workspace: session.workspace, path: rawPath });
@@ -158,7 +179,7 @@ async function openReview(rawPath) {
     if (current()?.id !== session.id) return;
     state.review = { open: true, path: result.path, lines: Array.isArray(result.lines) ? result.lines : [], loading: false, error: '' };
   } catch (error) {
-    state.review = { open: true, path: rawPath, lines: [], loading: false, error: error.message || '无法读取本地差异。' };
+    state.review = { open: true, path: rawPath, lines: [], loading: false, error: normalizeReviewError(error) };
   }
   renderReview();
 }
@@ -224,4 +245,4 @@ $('#refresh-environment').addEventListener('click', refreshEnvironment);
 $('#open-review').addEventListener('click', () => { setReviewOpen(true); renderReview(); });
 $('#close-review').addEventListener('click', () => setReviewOpen(false));
 window.seecoderDesktop.onRunnerEvent(handleRunnerEvent); window.seecoderDesktop.onRunnerStderr((payload) => addActivity('CLI 提示', payload?.data?.text || '', 'error'));
-ensureSession(); render(); renderEnvironment(); refreshEnvironment(); addActivity('桌面端已就绪', '默认模式 ' + state.mode, 'ok');
+ensureSession(); render(); renderEnvironment(); verifyDesktopCapabilities(); refreshEnvironment(); addActivity('桌面端已就绪', '默认模式 ' + state.mode, 'ok');

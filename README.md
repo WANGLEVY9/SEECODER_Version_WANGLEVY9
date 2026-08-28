@@ -65,6 +65,8 @@ cd ../..
 
 Electron 主进程使用 `contextIsolation`、`sandbox`、`nodeIntegration: false` 和 `shell: false`，只把任务与工作区作为字面参数数组传给 `uv run seecoder ... --event-json`。无 Node 环境时仍可使用 Tk 兼容端：`./desktop/run_desktop.sh`。
 
+Electron 的主进程不支持热更新。更新 `desktop/electron/main.cjs`、`preload.cjs` 或本地 IPC 后，请完全退出所有 SEECODER 窗口，再重新执行启动脚本；界面会在启动时检查本地 Git 审阅接口，并在内核版本不匹配时给出明确提示。
+
 ## 验证
 
 所有离线测试不需要真实 API key：
@@ -75,7 +77,7 @@ cd desktop/electron && npm test
 cd ../.. && PYTHONPATH=src python3.12 -m unittest discover -s desktop -v
 ```
 
-当前回归基线为 Python 后端 65/65、Electron 边界测试 6/6、Tk 兼容端 3/3；另有 JavaScript 语法、Python 编译和启动脚本检查。P0–P5 的设计、边界分析和受控模型验证记录见 [docs/](docs/)。
+当前回归基线为 Python 后端 65/65、Electron 边界测试 7/7、Tk 兼容端 3/3；另有 JavaScript 语法、Python 编译和启动脚本检查。P0–P5 的设计、边界分析和受控模型验证记录见 [docs/](docs/)。
 
 `demo_workspace` 初始故意包含失败的 `normalize_tag` 测试，用于演示 Agent 搜索代码、提出或执行补丁、运行受限测试、查看 Git diff 并总结结果。
 
