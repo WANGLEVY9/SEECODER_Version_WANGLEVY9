@@ -8,7 +8,7 @@ const SUGGESTIONS = [
   { icon: "🧐", label: "审查代码并提出修改建议", task: "审查当前工作区的代码质量，指出潜在 bug、边界与安全问题，并给出可落地的修改建议。" },
   { icon: "🔥", label: "修复问题和失败", task: "定位当前工作区里失败的测试或缺陷，做最小修复，然后运行测试确认通过。" },
 ];
-const state = { sessions: loadSessions(), currentId: null, running: false, mode: "ask", usageTotal: 0, lastRun: null };
+const state = { sessions: loadSessions(), currentId: null, running: false, mode: "ask", usageTotal: 0, lastRun: null, review: { open: false, path: null, lines: [], loading: false, error: "" } };
 
 const $ = (selector) => document.querySelector(selector);
 const sessionList = $('#session-list');
@@ -23,6 +23,13 @@ const modeSelect = $('#mode-select');
 const approvalBanner = $('#approval-banner');
 const approvalText = $('#approval-text');
 const environmentDetails = $('#environment-details');
+const appShell = $('.app-shell');
+const activityContent = $('.activity-content');
+const reviewPane = $('#review-pane');
+const reviewFiles = $('#review-files');
+const reviewSummary = $('#review-summary');
+const diffTitle = $('#diff-title');
+const diffView = $('#diff-view');
 
 function loadSessions() {
   try {
@@ -43,7 +50,7 @@ function renderSessions() {
     const button = document.createElement('button');
     button.className = 'session-item' + (session.id === state.currentId ? ' active' : '');
     button.innerHTML = '<span class="session-item-icon">◌</span><span><strong>' + escapeText(session.title) + '</strong><small>' + escapeText(shortPath(session.workspace)) + '</small></span>';
-    button.addEventListener('click', () => { if (!state.running) { state.currentId = session.id; persist(); render(); } });
+    button.addEventListener('click', () => { if (!state.running) { state.currentId = session.id; state.review = { open: false, path: null, lines: [], loading: false, error: '' }; setReviewOpen(false); persist(); render(); renderEnvironment(); } });
     sessionList.append(button);
   });
 }
@@ -75,7 +82,7 @@ function markdownToHtml(source) {
 }
 function changeCard(environment) {
   if (!environment?.isRepository || !environment.files?.length) return '';
-  const files = environment.files.slice(0, 6).map((file) => '<li><code>' + escapeText(file.path) + '</code><span><b>+' + file.added + '</b> <i>−' + file.deleted + '</i></span></li>').join('');
+  const files = environment.files.slice(0, 6).map((file) => '<li><button class="change-file" data-diff-path="' + escapeText(file.path) + '"><code>' + escapeText(file.path) + '</code><span><b>+' + file.added + '</b> <i>−' + file.deleted + '</i><small>查看差异 →</small></span></button></li>').join('');
   const remaining = environment.files.length - 6;
   return '<section class="change-card"><header><div class="change-icon">▣</div><div><strong>已编辑 ' + environment.files.length + ' 个文件</strong><small><b>+' + environment.added + '</b> −' + environment.deleted + '</small></div></header><ul>' + files + (remaining > 0 ? '<li class="more-files">另有 ' + remaining + ' 个文件</li>' : '') + '</ul></section>';
 }
@@ -88,9 +95,10 @@ function renderConversation() {
   const session = current(); $('#session-title').textContent = session.title; $('#workspace-label').textContent = session.workspace === defaultWorkspace ? '默认演示工作区 · demo_workspace' : session.workspace;
   if (!session.messages.length) { renderWelcome(); return; }
   conversation.innerHTML = session.messages.map((message) => { const label = { user: '你', agent: 'SEECODER', system: '本地状态' }[message.role] || '本地状态'; const body = message.role === 'agent' ? markdownToHtml(message.content) : escapeText(message.content); return '<article class="message ' + message.role + '"><div class="message-meta"><span class="dot"></span>' + label + '</div><div class="message-body' + (message.role === 'agent' ? ' markdown' : '') + '">' + body + '</div></article>'; }).join('') + changeCard(session.environment);
+  conversation.querySelectorAll('[data-diff-path]').forEach((button) => button.addEventListener('click', () => openReview(button.dataset.diffPath)));
   conversation.scrollTop = conversation.scrollHeight;
 }
-function render() { renderSessions(); renderConversation(); }
+function render() { renderSessions(); renderConversation(); renderReview(); }
 let liveAgentEl = null;
 function ensureLiveAgent() {
   if (!liveAgentEl) {
@@ -116,13 +124,51 @@ function renderEnvironment() {
   const changeText = environment.files.length ? '<b>+' + environment.added + '</b> <i>−' + environment.deleted + '</i>' : '<span class="environment-muted">无未提交变更</span>';
   environmentDetails.innerHTML = '<div class="environment-row"><span>▣</span><div><b>变更</b><small>' + environment.files.length + ' 个文件</small></div><em>' + changeText + '</em></div><div class="environment-row"><span>⌂</span><div><b>本地</b><small>' + escapeText(shortPath(session.workspace)) + '</small></div></div><div class="environment-row"><span>⌘</span><div><b>' + escapeText(environment.branch || 'detached HEAD') + '</b><small>当前分支</small></div></div><div class="environment-row"><span>◌</span><div><b>' + escapeText(state.mode) + ' 模式</b><small>' + (state.running ? '本地任务运行中' : '等待下一次任务') + '</small></div></div>';
 }
+function diffLineHtml(line) {
+  return '<div class="diff-line ' + escapeText(line.kind || 'context') + '"><span>' + String(line.number || '').padStart(3, ' ') + '</span><code>' + escapeText(line.text || ' ') + '</code></div>';
+}
+function renderReview() {
+  const session = current(); const environment = session?.environment;
+  const files = environment?.isRepository ? (environment.files || []) : [];
+  const review = state.review;
+  reviewFiles.innerHTML = files.length ? files.map((file) => '<button class="review-file' + (file.path === review.path ? ' active' : '') + '" data-review-path="' + escapeText(file.path) + '"><code>' + escapeText(file.path) + '</code><span><b>+' + file.added + '</b> −' + file.deleted + '</span></button>').join('') : '<p class="review-muted">当前工作区没有可审阅的未提交变更。</p>';
+  reviewFiles.querySelectorAll('[data-review-path]').forEach((button) => button.addEventListener('click', () => openReview(button.dataset.reviewPath)));
+  if (review.loading) {
+    reviewSummary.textContent = '正在从本地 Git 读取差异…'; diffTitle.textContent = review.path || '正在读取'; diffView.innerHTML = '<p class="review-muted">正在加载只读差异。</p>'; return;
+  }
+  if (review.error) {
+    reviewSummary.textContent = review.error; diffTitle.textContent = review.path || '无法显示差异'; diffView.innerHTML = '<p class="review-muted">未修改文件内容，也未运行外部差异程序。</p>'; return;
+  }
+  if (!review.path) {
+    reviewSummary.textContent = files.length ? '选择一个文件，查看本地 Git 未提交差异。' : '当前工作区没有可审阅的未提交变更。'; diffTitle.textContent = '尚未选择文件'; diffView.innerHTML = '<p class="review-muted">文件差异会在这里以只读形式显示。</p>'; return;
+  }
+  reviewSummary.textContent = '以下为 ' + review.path + ' 的本地未提交差异。'; diffTitle.textContent = review.path;
+  diffView.innerHTML = review.lines.length ? review.lines.map(diffLineHtml).join('') : '<p class="review-muted">Git 未返回可显示的文本差异。该文件可能只有暂存区变更，或工作区状态已更新。</p>';
+}
+function setReviewOpen(open) {
+  state.review.open = open; reviewPane.hidden = !open; activityContent.hidden = open; appShell.classList.toggle('review-open', open);
+}
+async function openReview(rawPath) {
+  const session = current(); if (!session?.workspace || !rawPath) return;
+  setReviewOpen(true);
+  state.review = { open: true, path: rawPath, lines: [], loading: true, error: '' }; renderReview();
+  try {
+    const result = await window.seecoderDesktop.readDiff({ workspace: session.workspace, path: rawPath });
+    if (!result?.ok) throw new Error(result?.error || '无法读取本地差异。');
+    if (current()?.id !== session.id) return;
+    state.review = { open: true, path: result.path, lines: Array.isArray(result.lines) ? result.lines : [], loading: false, error: '' };
+  } catch (error) {
+    state.review = { open: true, path: rawPath, lines: [], loading: false, error: error.message || '无法读取本地差异。' };
+  }
+  renderReview();
+}
 async function refreshEnvironment() {
   const session = current(); if (!session?.workspace) return;
   environmentDetails.innerHTML = '<span class="environment-muted">正在读取本地 Git 状态…</span>';
-  try { session.environment = await window.seecoderDesktop.inspectEnvironment(session.workspace); persist(); renderEnvironment(); renderConversation(); }
+  try { session.environment = await window.seecoderDesktop.inspectEnvironment(session.workspace); persist(); renderEnvironment(); renderConversation(); renderReview(); }
   catch { session.environment = { isRepository: false, files: [] }; renderEnvironment(); }
 }
-async function chooseWorkspace() { const picked = await window.seecoderDesktop.chooseWorkspace(); if (!picked) return; current().workspace = picked; current().environment = null; current().updatedAt = Date.now(); persist(); render(); addActivity('已选择工作区', shortPath(picked), 'ok'); await refreshEnvironment(); }
+async function chooseWorkspace() { const picked = await window.seecoderDesktop.chooseWorkspace(); if (!picked) return; current().workspace = picked; current().environment = null; current().updatedAt = Date.now(); state.review = { open: false, path: null, lines: [], loading: false, error: '' }; setReviewOpen(false); persist(); render(); addActivity('已选择工作区', shortPath(picked), 'ok'); await refreshEnvironment(); }
 async function sendTask() {
   const task = taskInput.value.trim(); const session = current(); if (!task || state.running) return; if (!session.workspace) return;
   appendMessage('user', task); taskInput.value = ''; activityList.innerHTML = ''; hideApproval(); render(); renderEnvironment(); setRunning(true); addActivity('启动本地 AgentRunner', '模式：' + state.mode + ' · 受限 argv 执行', 'ok');
@@ -168,12 +214,14 @@ function handleRunnerEvent(payload) {
   if (event === 'chat_exit') { setRunning(false); hideApproval(); render(); }
 }
 
-$('#new-session').addEventListener('click', () => { if (state.running) return; hideApproval(); state.sessions.unshift(makeSession(current()?.workspace || defaultWorkspace)); state.currentId = state.sessions[0].id; persist(); render(); renderEnvironment(); taskInput.focus(); });
+$('#new-session').addEventListener('click', () => { if (state.running) return; hideApproval(); state.sessions.unshift(makeSession(current()?.workspace || defaultWorkspace)); state.currentId = state.sessions[0].id; state.review = { open: false, path: null, lines: [], loading: false, error: '' }; setReviewOpen(false); persist(); render(); renderEnvironment(); taskInput.focus(); });
 $('#choose-workspace').addEventListener('click', chooseWorkspace); $('#top-workspace').addEventListener('click', chooseWorkspace); $('#composer-workspace').addEventListener('click', chooseWorkspace); sendButton.addEventListener('click', sendTask);
 stopButton.addEventListener('click', async () => { const session = current(); const r = session ? await window.seecoderDesktop.stopChat(session.id) : null; if (r?.stopped) addActivity('已请求停止', '正在终止本地会话'); });
 if (modeSelect) modeSelect.addEventListener('change', () => { state.mode = modeSelect.value; addActivity('切换工作模式', state.mode); });
 taskInput.addEventListener('keydown', (event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); sendTask(); } });
 $('#about-button').addEventListener('click', () => $('#about-dialog').showModal()); $('#close-about').addEventListener('click', () => $('#about-dialog').close());
 $('#refresh-environment').addEventListener('click', refreshEnvironment);
+$('#open-review').addEventListener('click', () => { setReviewOpen(true); renderReview(); });
+$('#close-review').addEventListener('click', () => setReviewOpen(false));
 window.seecoderDesktop.onRunnerEvent(handleRunnerEvent); window.seecoderDesktop.onRunnerStderr((payload) => addActivity('CLI 提示', payload?.data?.text || '', 'error'));
 ensureSession(); render(); renderEnvironment(); refreshEnvironment(); addActivity('桌面端已就绪', '默认模式 ' + state.mode, 'ok');

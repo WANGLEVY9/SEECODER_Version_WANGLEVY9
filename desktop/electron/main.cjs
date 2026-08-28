@@ -5,7 +5,7 @@ const { spawn, execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const path = require("node:path");
 const fs = require("node:fs/promises");
-const { buildChatInvocation, parseEventLine, parseGitEnvironment } = require("./core.cjs");
+const { buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff } = require("./core.cjs");
 
 const projectRoot = path.resolve(__dirname, "../..");
 let mainWindow;
@@ -117,6 +117,31 @@ ipcMain.handle("seecoder:inspect-environment", async (_event, rawWorkspace) => {
   ]);
   if (branch === null || nameStatus === null || numstat === null) return { isRepository: false, files: [] };
   return parseGitEnvironment({ branch, nameStatus, numstat });
+});
+
+function safeWorkspaceRelativePath(workspace, rawPath) {
+  if (typeof rawPath !== "string" || !rawPath.trim() || path.isAbsolute(rawPath)) return null;
+  const root = path.resolve(workspace);
+  const candidate = path.resolve(root, rawPath);
+  const relative = path.relative(root, candidate);
+  if (!relative || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) return null;
+  return relative;
+}
+
+ipcMain.handle("seecoder:read-diff", async (_event, payload) => {
+  const rawWorkspace = payload?.workspace;
+  if (typeof rawWorkspace !== "string" || !rawWorkspace.trim()) return { ok: false, error: "请选择有效工作区。" };
+  const workspace = path.resolve(rawWorkspace);
+  try {
+    if (!(await fs.stat(workspace)).isDirectory()) return { ok: false, error: "工作区目录不可用。" };
+  } catch {
+    return { ok: false, error: "工作区目录不可用。" };
+  }
+  const relativePath = safeWorkspaceRelativePath(workspace, payload?.path);
+  if (!relativePath) return { ok: false, error: "只允许读取工作区内的相对文件路径。" };
+  const diff = await gitOutput(workspace, ["diff", "--no-ext-diff", "--unified=3", "--", relativePath]);
+  if (diff === null) return { ok: false, error: "无法读取该工作区的本地 Git 差异。" };
+  return { ok: true, path: relativePath, lines: parseUnifiedDiff(diff) };
 });
 
 function safeSessionId(value) {

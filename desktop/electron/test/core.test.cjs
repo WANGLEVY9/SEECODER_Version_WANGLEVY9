@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment } = require("../core.cjs");
+const { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff } = require("../core.cjs");
 
 test("backend invocation is literal argv and never enables host shell", () => {
   const result = buildBackendInvocation("/usr/local/bin/uv", "inspect files", "/tmp/workspace");
@@ -45,4 +45,9 @@ test("git environment parser produces file and line-change summaries", () => {
       { path: "README.md", status: "M", added: 3, deleted: 0 },
     ],
   });
+});
+
+test("unified diff parser classifies lines for the local review panel", () => {
+  const lines = parseUnifiedDiff("diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-old\n+new\n same");
+  assert.deepEqual(lines.map((line) => line.kind), ["meta", "file", "file", "hunk", "removed", "added", "context"]);
 });

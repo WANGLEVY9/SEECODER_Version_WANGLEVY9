@@ -59,4 +59,16 @@ function parseGitEnvironment({ branch = "", nameStatus = "", numstat = "" }) {
   return { isRepository: Boolean(branch), branch: branch.trim(), added, deleted, files };
 }
 
-module.exports = { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment };
+function parseUnifiedDiff(diff = "") {
+  return String(diff).split(/\r?\n/).filter((text, index, lines) => text || index < lines.length - 1).map((text, index) => {
+    let kind = "context";
+    if (text.startsWith("@@")) kind = "hunk";
+    else if (text.startsWith("+++ ") || text.startsWith("--- ")) kind = "file";
+    else if (text.startsWith("+")) kind = "added";
+    else if (text.startsWith("-")) kind = "removed";
+    else if (text.startsWith("diff ") || text.startsWith("index ")) kind = "meta";
+    return { number: index + 1, kind, text };
+  });
+}
+
+module.exports = { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment, parseUnifiedDiff };

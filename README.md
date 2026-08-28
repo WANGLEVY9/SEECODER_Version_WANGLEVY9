@@ -51,7 +51,7 @@ uv run seecoder chat --workspace demo_workspace --mode ask \
 
 ## Electron 桌面端
 
-推荐使用 Electron + 原生 HTML/CSS/JavaScript 桌面界面。每个项目会话连接一个本地 `seecoder chat` 进程，后续任务会延续同一模型上下文、工具回合与审批状态；消息记录可独立滚动，输入框固定在底部。它还包含项目会话列表、工作区选择、任务建议卡片、模式切换、token 统计、实时执行轨迹、Markdown 安全渲染、基于本地 Git diff 的已编辑文件卡片，以及可刷新工作区/分支/变更统计环境卡片。界面不读取、不显示、不持久化 API key。
+推荐使用 Electron + 原生 HTML/CSS/JavaScript 桌面界面。每个项目会话连接一个本地 `seecoder chat` 进程，后续任务会延续同一模型上下文、工具回合与审批状态；消息记录可独立滚动，输入框固定在底部。界面采用会话、工作区、审阅三栏：包含项目会话列表、工作区选择、任务建议卡片、模式切换、token 统计、实时执行轨迹、Markdown 安全渲染，以及可刷新工作区、分支和变更统计的环境信息。点击“已编辑文件”卡片或右侧“审阅”可在只读本地 Git 差异面板中定位单个文件；主进程只接受工作区内相对路径，并以 `git diff --no-ext-diff` 获取结构化差异行，不读取文件内容、不调用外部 diff 程序。界面不读取、不显示、不持久化 API key。
 
 首次安装需要 Node.js 22.12+：
 
@@ -75,7 +75,7 @@ cd desktop/electron && npm test
 cd ../.. && PYTHONPATH=src python3.12 -m unittest discover -s desktop -v
 ```
 
-当前回归基线为 Python 后端 65/65、Electron 边界测试 5/5、Tk 兼容端 3/3；另有 JavaScript 语法、Python 编译和启动脚本检查。P0–P5 的设计、边界分析和受控模型验证记录见 [docs/](docs/)。
+当前回归基线为 Python 后端 65/65、Electron 边界测试 6/6、Tk 兼容端 3/3；另有 JavaScript 语法、Python 编译和启动脚本检查。P0–P5 的设计、边界分析和受控模型验证记录见 [docs/](docs/)。
 
 `demo_workspace` 初始故意包含失败的 `normalize_tag` 测试，用于演示 Agent 搜索代码、提出或执行补丁、运行受限测试、查看 Git diff 并总结结果。
 
