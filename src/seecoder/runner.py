@@ -21,6 +21,7 @@ from seecoder.tools import (
     ApplyPatchTool,
     GitDiffTool,
     GitLogTool,
+    GitShowTool,
     GitStatusTool,
     ListFilesTool,
     ListSkillsTool,
@@ -34,6 +35,8 @@ from seecoder.tools import (
     WebSearchTool,
     WorkspaceBoundary,
     WriteFileTool,
+    FindFilesTool,
+    ProjectOverviewTool,
 )
 from seecoder.trace import NullTraceWriter, TraceWriter
 from seecoder.types import (
@@ -170,6 +173,9 @@ class AgentRunner:
             GitStatusTool(boundary),
             GitLogTool(boundary),
             ListSkillsTool(boundary),
+            GitShowTool(boundary),
+            FindFilesTool(boundary),
+            ProjectOverviewTool(boundary),
             RunCommandTool(
                 boundary,
                 default_timeout_s=settings.command_timeout_s,

@@ -47,7 +47,7 @@ def call(identifier: str, name: str, arguments: dict[str, Any]) -> ToolCall:
 class ApprovalPolicyTests(unittest.TestCase):
     def test_read_only_tools_run_in_every_mode(self) -> None:
         for mode in (Mode.AUTO, Mode.PLAN, Mode.ASK):
-            for tool_name in ("list_files", "read_file", "search_code", "git_status", "git_log", "list_skills"):
+            for tool_name in ("list_files", "read_file", "search_code", "git_status", "git_log", "git_show", "list_skills", "find_files", "project_overview"):
                 self.assertTrue(is_read_only(tool_name))
                 self.assertEqual(Policy(mode).decide(tool_name), ApprovalDecision.ALLOW)
 

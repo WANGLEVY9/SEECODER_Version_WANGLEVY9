@@ -2,11 +2,12 @@
 
 from seecoder.tools.base import ToolRegistry, WorkspaceBoundary
 from seecoder.tools.files import ApplyPatchTool, ListFilesTool, ReadFileTool, RenameDirectoryTool, SearchFilesTool, WriteFileTool
-from seecoder.tools.git import GitDiffTool, GitLogTool, GitStatusTool
+from seecoder.tools.git import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
 from seecoder.tools.search_code import SearchCodeTool
 from seecoder.tools.shell import RunCommandTool
 from seecoder.tools.subagent import SpawnAgentTool
 from seecoder.tools.skills import ListSkillsTool
+from seecoder.tools.workspace import FindFilesTool, ProjectOverviewTool
 from seecoder.tools.web_search import WebSearchTool
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "ApplyPatchTool",
     "GitDiffTool",
     "GitLogTool",
+    "GitShowTool",
     "GitStatusTool",
     "ReadFileTool",
     "RenameDirectoryTool",
@@ -22,6 +24,8 @@ __all__ = [
     "SearchCodeTool",
     "SearchFilesTool",
     "ListSkillsTool",
+    "FindFilesTool",
+    "ProjectOverviewTool",
     "ToolRegistry",
     "WebSearchTool",
     "WorkspaceBoundary",

@@ -13,8 +13,11 @@ from seecoder.tools import (
     GitDiffTool,
     GitLogTool,
     GitStatusTool,
+    GitShowTool,
     ListFilesTool,
     ListSkillsTool,
+    FindFilesTool,
+    ProjectOverviewTool,
     ReadFileTool,
     RenameDirectoryTool,
     RunCommandTool,
@@ -80,6 +83,27 @@ class LocalToolsTests(unittest.TestCase):
         self.assertEqual(root_result.error.kind, "WorkspaceRoot")
         self.assertFalse(protected_result.ok)
         self.assertEqual(protected_result.error.kind, "ProtectedPath")
+
+    def test_find_files_and_project_overview_are_bounded_read_only_tools(self) -> None:
+        (self.root / "src" / "sample.py").write_text("print('ok')\n", encoding="utf-8")
+        found = FindFilesTool(self.boundary).execute({"pattern": "**/*.py"})
+        overview = ProjectOverviewTool(self.boundary).execute({})
+        self.assertTrue(found.ok)
+        self.assertIn("src/sample.py", found.data["matches"])
+        self.assertTrue(overview.ok)
+        self.assertEqual(overview.data["files_by_extension"][".py"], 1)
+
+    def test_git_show_returns_commit_summary_without_mutation(self) -> None:
+        subprocess.run(["git", "init", "--quiet", str(self.root)], check=True)
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--quiet", "-m", "fixture"],
+            cwd=self.root,
+            check=True,
+        )
+        result = GitShowTool(self.boundary).execute({"revision": "HEAD"})
+        self.assertTrue(result.ok)
+        self.assertIn("fixture", result.data["summary"])
 
     @unittest.skipIf(os.name == "nt", "symbolic-link test uses POSIX semantics")
     def test_symlink_escape_is_rejected(self) -> None:

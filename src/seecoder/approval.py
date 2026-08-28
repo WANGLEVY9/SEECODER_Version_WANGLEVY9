@@ -9,7 +9,7 @@ from seecoder.types import ApprovalDecision, Mode
 READ_ONLY_TOOLS = frozenset(
     {
         "list_files", "read_file", "search_files", "search_code", "git_diff", "git_status", "git_log",
-        "list_skills", "web_search",
+        "list_skills", "find_files", "project_overview", "git_show", "web_search",
     }
 )
 

@@ -166,3 +166,43 @@ class GitLogTool(GitDiffTool):
             revision, subject, author, committed_at = parts
             commits.append({"revision": revision, "subject": subject, "author": author, "committed_at": committed_at})
         return ToolResult.success({"commits": commits})
+
+
+class GitShowTool(GitDiffTool):
+    """Show a bounded local commit summary through fixed Git arguments."""
+
+    name = "git_show"
+    description = "Show a bounded read-only summary of one local Git commit, such as HEAD or a revision hash."
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "revision": {"type": "string", "description": "Commit reference such as HEAD or an abbreviated hash"},
+            "max_chars": {"type": "integer", "minimum": 500, "maximum": 20000, "default": 8000},
+        },
+        "required": ["revision"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        revision = arguments.get("revision")
+        if not isinstance(revision, str) or not revision.strip() or len(revision) > 128 or any(char in revision for char in "\x00\n\r;|&$` "):
+            raise ValueError("'revision' must be a single Git revision token")
+        max_chars = arguments.get("max_chars", 8_000)
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 500 <= max_chars <= 20_000:
+            raise ValueError("'max_chars' must be an integer between 500 and 20000")
+        try:
+            repository = self._run(["rev-parse", "--is-inside-work-tree"])
+        except FileNotFoundError:
+            return ToolResult.failure("GitUnavailable", "The local 'git' executable is not available")
+        except subprocess.TimeoutExpired:
+            return ToolResult.failure("GitTimeout", "Git repository check exceeded the 10-second limit")
+        if repository.returncode != 0 or repository.stdout.strip() != "true":
+            return ToolResult.failure("NotGitRepository", "The selected workspace is not inside a Git work tree")
+        try:
+            result = self._run(["show", "--no-ext-diff", "--no-color", "--format=fuller", "--stat", "--summary", revision])
+        except subprocess.TimeoutExpired:
+            return ToolResult.failure("GitTimeout", "Git show exceeded the 10-second limit")
+        if result.returncode != 0:
+            return ToolResult.failure("GitError", result.stderr.strip() or "Git could not inspect the revision")
+        rendered, truncated = _truncate(result.stdout, max_chars)
+        return ToolResult.success({"revision": revision, "summary": rendered}, meta={"truncated": truncated})
