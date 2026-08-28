@@ -5,11 +5,11 @@ const { spawn, execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const path = require("node:path");
 const fs = require("node:fs/promises");
-const { buildBackendInvocation, parseEventLine, parseGitEnvironment } = require("./core.cjs");
+const { buildChatInvocation, parseEventLine, parseGitEnvironment } = require("./core.cjs");
 
 const projectRoot = path.resolve(__dirname, "../..");
 let mainWindow;
-let activeRun;
+const activeChats = new Map();
 const execFileAsync = promisify(execFile);
 
 function send(channel, payload) {
@@ -20,7 +20,7 @@ function findUv() {
   return process.env.SEECODER_UV || "uv";
 }
 
-function consumeLines(stream, channel) {
+function consumeLines(stream, channel, sessionId) {
   let remainder = "";
   stream.setEncoding("utf8");
   stream.on("data", (chunk) => {
@@ -30,23 +30,24 @@ function consumeLines(stream, channel) {
     for (const line of lines) {
       if (!line) continue;
       const event = parseEventLine(line);
-      send(channel, event || { event: "unstructured_output", data: { text: line } });
+      send(channel, { ...(event || { event: "unstructured_output", data: { text: line } }), sessionId });
     }
   });
   stream.on("end", () => {
     if (!remainder) return;
     const event = parseEventLine(remainder);
-    send(channel, event || { event: "unstructured_output", data: { text: remainder } });
+    send(channel, { ...(event || { event: "unstructured_output", data: { text: remainder } }), sessionId });
   });
 }
 
-function stopActiveRun() {
-  if (!activeRun || activeRun.child.exitCode !== null) return false;
+function stopActiveChat(sessionId) {
+  const active = activeChats.get(sessionId);
+  if (!active || active.child.exitCode !== null) return false;
   try {
-    if (process.platform !== "win32") process.kill(-activeRun.child.pid, "SIGTERM");
-    else activeRun.child.kill("SIGTERM");
+    if (process.platform !== "win32") process.kill(-active.child.pid, "SIGTERM");
+    else active.child.kill("SIGTERM");
   } catch {
-    activeRun.child.kill("SIGTERM");
+    active.child.kill("SIGTERM");
   }
   return true;
 }
@@ -78,7 +79,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  stopActiveRun();
+  for (const sessionId of activeChats.keys()) stopActiveChat(sessionId);
   if (process.platform !== "darwin") app.quit();
 });
 
@@ -118,9 +119,20 @@ ipcMain.handle("seecoder:inspect-environment", async (_event, rawWorkspace) => {
   return parseGitEnvironment({ branch, nameStatus, numstat });
 });
 
-ipcMain.handle("seecoder:start-run", (_event, payload) => {
-  if (activeRun && activeRun.child.exitCode === null) throw new Error("已有任务正在运行，请先停止或等待它完成。");
-  const { command, args } = buildBackendInvocation(findUv(), payload?.task, payload?.workspace, payload?.mode);
+function safeSessionId(value) {
+  return typeof value === "string" && /^[a-zA-Z0-9-]{8,80}$/.test(value) ? value : null;
+}
+
+ipcMain.handle("seecoder:start-chat", async (_event, payload) => {
+  const sessionId = safeSessionId(payload?.sessionId);
+  if (!sessionId) throw new Error("会话标识无效。");
+  const existing = activeChats.get(sessionId);
+  if (existing && existing.child.exitCode === null) return { started: false, resumed: true };
+  const directory = path.join(app.getPath("userData"), "seecoder-sessions");
+  await fs.mkdir(directory, { recursive: true });
+  const sessionPath = path.join(directory, sessionId + ".json");
+  const hasSavedSession = await fs.access(sessionPath).then(() => true).catch(() => false);
+  const { command, args } = buildChatInvocation(findUv(), payload?.workspace, payload?.mode, sessionPath, hasSavedSession);
   const child = spawn(command, args, {
     cwd: projectRoot,
     detached: process.platform !== "win32",
@@ -128,23 +140,35 @@ ipcMain.handle("seecoder:start-run", (_event, payload) => {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
-  activeRun = { child };
-  send("seecoder:runner-event", { event: "run_started", data: { workspace: payload.workspace } });
-  consumeLines(child.stdout, "seecoder:runner-event");
-  consumeLines(child.stderr, "seecoder:runner-stderr");
-  child.on("error", (error) => send("seecoder:runner-event", { event: "runner_error", data: { message: error.message } }));
+  activeChats.set(sessionId, { child, workspace: payload.workspace, mode: payload.mode });
+  send("seecoder:runner-event", { event: "chat_started", data: { workspace: payload.workspace }, sessionId });
+  consumeLines(child.stdout, "seecoder:runner-event", sessionId);
+  consumeLines(child.stderr, "seecoder:runner-stderr", sessionId);
+  child.on("error", (error) => send("seecoder:runner-event", { event: "runner_error", data: { message: error.message }, sessionId }));
   child.on("close", (code, signal) => {
-    send("seecoder:runner-event", { event: "process_exit", data: { code, signal } });
-    activeRun = undefined;
+    send("seecoder:runner-event", { event: "chat_exit", data: { code, signal }, sessionId });
+    activeChats.delete(sessionId);
   });
-  return { started: true };
+  return { started: true, resumed: hasSavedSession };
 });
 
-ipcMain.handle("seecoder:approve", (_event, decision) => {
-  if (!activeRun || !activeRun.child.stdin) return { handled: false };
-  const line = decision === true || decision === "approve" ? "y\n" : "n\n";
-  activeRun.child.stdin.write(line);
+ipcMain.handle("seecoder:send-chat-task", (_event, payload) => {
+  const sessionId = safeSessionId(payload?.sessionId);
+  const task = typeof payload?.task === "string" ? payload.task.trim() : "";
+  const active = sessionId ? activeChats.get(sessionId) : null;
+  if (!active || !active.child.stdin || !task) return { handled: false };
+  active.child.stdin.write(task + "\n");
   return { handled: true };
 });
 
-ipcMain.handle("seecoder:stop-run", () => ({ stopped: stopActiveRun() }));
+ipcMain.handle("seecoder:approve", (_event, payload) => {
+  const sessionId = safeSessionId(payload?.sessionId);
+  const active = sessionId ? activeChats.get(sessionId) : null;
+  if (!active || !active.child.stdin) return { handled: false };
+  const decision = payload?.decision;
+  const line = decision === true || decision === "approve" ? "y\n" : "n\n";
+  active.child.stdin.write(line);
+  return { handled: true };
+});
+
+ipcMain.handle("seecoder:stop-chat", (_event, sessionId) => ({ stopped: Boolean(safeSessionId(sessionId)) && stopActiveChat(sessionId) }));

@@ -240,7 +240,7 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
                 "state": outcome.state, "final_text": outcome.final_text, "steps": outcome.steps,
                 "mode": outcome.mode.value,
                 "plan": [step.__dict__ for step in outcome.plan],
-            }}, ensure_ascii=False))
+            }}, ensure_ascii=False), flush=True)
         else:
             _print_outcome(outcome, quiet=args.quiet)
         if outcome.state == RunState.PLAN_PROPOSED and not args.auto_approve:
@@ -256,7 +256,7 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
                     print(json.dumps({"event": "turn_outcome", "data": {
                         "state": executed.state, "final_text": executed.final_text,
                         "steps": executed.steps, "mode": executed.mode.value,
-                    }}, ensure_ascii=False))
+                    }}, ensure_ascii=False), flush=True)
                 else:
                     _print_outcome(executed, quiet=args.quiet)
     return 0

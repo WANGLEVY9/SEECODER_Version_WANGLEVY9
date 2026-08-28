@@ -11,6 +11,18 @@ function buildBackendInvocation(uv, task, workspace, mode) {
   return { command: uv, args };
 }
 
+function buildChatInvocation(uv, workspace, mode, sessionPath, resume) {
+  if (typeof uv !== "string" || !uv.trim()) throw new Error("未找到 uv；请安装 uv 或设置 SEECODER_UV。");
+  if (typeof workspace !== "string" || !workspace.trim()) throw new Error("请先选择一个已存在的工作区。");
+  if (typeof sessionPath !== "string" || !sessionPath.trim()) throw new Error("会话存储路径不能为空。");
+  const allowed = { auto: "auto", plan: "plan", ask: "ask" };
+  const selected = allowed[mode] || "auto";
+  const args = ["run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", sessionPath];
+  if (resume) args.push("--resume", sessionPath);
+  if (selected !== "auto") args.push("--mode", selected);
+  return { command: uv, args };
+}
+
 function parseEventLine(line) {
   try {
     const payload = JSON.parse(line);
@@ -47,4 +59,4 @@ function parseGitEnvironment({ branch = "", nameStatus = "", numstat = "" }) {
   return { isRepository: Boolean(branch), branch: branch.trim(), added, deleted, files };
 }
 
-module.exports = { buildBackendInvocation, parseEventLine, parseGitEnvironment };
+module.exports = { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment };

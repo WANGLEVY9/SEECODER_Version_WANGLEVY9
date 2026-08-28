@@ -127,32 +127,30 @@ async function sendTask() {
   const task = taskInput.value.trim(); const session = current(); if (!task || state.running) return; if (!session.workspace) return;
   appendMessage('user', task); taskInput.value = ''; activityList.innerHTML = ''; hideApproval(); render(); renderEnvironment(); setRunning(true); addActivity('启动本地 AgentRunner', '模式：' + state.mode + ' · 受限 argv 执行', 'ok');
   state.lastRun = { task, workspace: session.workspace, mode: state.mode };
-  try { await window.seecoderDesktop.startRun({ task, workspace: session.workspace, mode: state.mode }); } catch (error) { appendMessage('system', '无法启动任务：' + error.message); addActivity('启动失败', error.message, 'error'); setRunning(false); setBadge('需处理', 'error'); render(); }
+  try {
+    await window.seecoderDesktop.startChat({ sessionId: session.id, workspace: session.workspace, mode: state.mode });
+    const accepted = await window.seecoderDesktop.sendChatTask({ sessionId: session.id, task });
+    if (!accepted?.handled) throw new Error('本地会话未准备好接收任务。');
+  } catch (error) { appendMessage('system', '无法启动本地会话：' + error.message); addActivity('启动失败', error.message, 'error'); setRunning(false); setBadge('需处理', 'error'); render(); }
 }
-function executePlanAgain() {
-  if (!state.lastRun || state.running) return;
-  const copy = Object.assign({}, state.lastRun); hideApproval();
-  state.mode = 'auto'; if (modeSelect) modeSelect.value = 'auto';
-  addActivity('已批准计划', '以自动模式重新执行', 'ok');
-  setRunning(true);
-  window.seecoderDesktop.startRun({ task: copy.task, workspace: copy.workspace, mode: 'auto' }).catch((error) => { setRunning(false); addActivity('执行失败', error.message, 'error'); });
-}
+function approveCurrent(decision) { const session = current(); if (session) window.seecoderDesktop.approve({ sessionId: session.id, decision }); }
 function handleRunnerEvent(payload) {
+  if (payload?.sessionId && payload.sessionId !== state.currentId) return;
   const { event, data } = payload || {};
   if (event === 'usage') { state.usageTotal = data?.total_tokens || state.usageTotal; setCost(state.usageTotal); return; }
   if (event === 'token') { const el = ensureLiveAgent(); if (el) { el.textContent += (data?.text || ''); conversation.scrollTop = conversation.scrollHeight; } return; }
   if (event === 'approval_request') {
-    showApproval('批准工具调用：' + (data?.name || '未知工具') + '？', () => window.seecoderDesktop.approve(true), () => window.seecoderDesktop.approve(false));
+    showApproval('批准工具调用：' + (data?.name || '未知工具') + '？', () => approveCurrent(true), () => approveCurrent(false));
     addActivity('等待批准', data?.name || '', 'running'); return;
   }
-  if (event === 'run_outcome') {
+  if (event === 'turn_outcome') {
     const stateName = data?.state || 'unknown';
     const planSteps = Array.isArray(data?.plan) ? data.plan : [];
     if (stateName === 'plan_proposed') {
       const planLines = planSteps.map((s) => '- ' + (s.description || s.tool)).join('\n');
       appendMessage('agent', planLines ? (data?.final_text || '') + '\n' + planLines : (data?.final_text || '计划已生成。'));
       addActivity('计划已生成，等待批准', planSteps.length + ' 步计划', 'running');
-      showApproval('批准该计划并以自动模式执行？', () => executePlanAgain(), () => setRunning(false));
+      showApproval('批准该计划并继续执行？', () => approveCurrent(true), () => approveCurrent(false));
       liveAgentEl = null; setBadge('待批准', 'running'); render(); return;
     }
     hideApproval();
@@ -160,19 +158,19 @@ function handleRunnerEvent(payload) {
     addActivity('完成：' + stateName, (data?.steps ?? 0) + ' 步', stateName === 'final' ? 'ok' : 'error'); setRunning(false); liveAgentEl = null; setBadge(stateName === 'final' ? '已完成' : '需处理', stateName === 'final' ? 'ready' : 'error'); render(); refreshEnvironment(); return;
   }
   const summaries = {
-    run_started: ['任务已启动', data?.workspace], model_request: ['请求模型', '第 ' + (data?.step ?? '?') + ' 步'], tool_dispatch: ['准备工具调用', (data?.count ?? 0) + ' 个工具'],
+    chat_started: ['本地会话已连接', data?.workspace], run_started: ['任务已启动', data?.workspace], model_request: ['请求模型', '第 ' + (data?.step ?? '?') + ' 步'], tool_dispatch: ['准备工具调用', (data?.count ?? 0) + ' 个工具'],
     tool_result: [data?.ok ? '完成工具：' + (data?.name || 'unknown') : '工具失败：' + (data?.name || 'unknown'), data?.error || '', data?.ok ? 'ok' : 'error'],
     plan_proposal: ['计划一步', data?.description || data?.name || '', 'ok'],
-    configuration_error: ['配置错误', data?.message || '', 'error'], runner_error: ['本地进程错误', data?.message || '', 'error'], process_exit: ['本地进程已退出', 'code=' + (data?.code ?? 'null')],
+    configuration_error: ['配置错误', data?.message || '', 'error'], runner_error: ['本地进程错误', data?.message || '', 'error'], chat_exit: ['本地会话已退出', 'code=' + (data?.code ?? 'null')],
   };
   const summary = summaries[event]; if (summary) addActivity(summary[0], summary[1], summary[2]); else if (event === 'unstructured_output') addActivity('本地输出', data?.text || '');
   if (event === 'tool_result' && data?.ok && ['write_file', 'apply_patch'].includes(data?.name)) refreshEnvironment();
-  if (event === 'process_exit') { setRunning(false); hideApproval(); render(); }
+  if (event === 'chat_exit') { setRunning(false); hideApproval(); render(); }
 }
 
 $('#new-session').addEventListener('click', () => { if (state.running) return; hideApproval(); state.sessions.unshift(makeSession(current()?.workspace || defaultWorkspace)); state.currentId = state.sessions[0].id; persist(); render(); renderEnvironment(); taskInput.focus(); });
 $('#choose-workspace').addEventListener('click', chooseWorkspace); $('#top-workspace').addEventListener('click', chooseWorkspace); $('#composer-workspace').addEventListener('click', chooseWorkspace); sendButton.addEventListener('click', sendTask);
-stopButton.addEventListener('click', async () => { const r = await window.seecoderDesktop.stopRun(); if (r?.stopped) addActivity('已请求停止', '正在终止本地任务'); });
+stopButton.addEventListener('click', async () => { const session = current(); const r = session ? await window.seecoderDesktop.stopChat(session.id) : null; if (r?.stopped) addActivity('已请求停止', '正在终止本地会话'); });
 if (modeSelect) modeSelect.addEventListener('change', () => { state.mode = modeSelect.value; addActivity('切换工作模式', state.mode); });
 taskInput.addEventListener('keydown', (event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); sendTask(); } });
 $('#about-button').addEventListener('click', () => $('#about-dialog').showModal()); $('#close-about').addEventListener('click', () => $('#about-dialog').close());

@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildBackendInvocation, parseEventLine, parseGitEnvironment } = require("../core.cjs");
+const { buildBackendInvocation, buildChatInvocation, parseEventLine, parseGitEnvironment } = require("../core.cjs");
 
 test("backend invocation is literal argv and never enables host shell", () => {
   const result = buildBackendInvocation("/usr/local/bin/uv", "inspect files", "/tmp/workspace");
@@ -18,6 +18,12 @@ test("mode is forwarded only for non-auto modes", () => {
   assert.ok(ask.args.includes("ask"));
   const auto = buildBackendInvocation("/usr/local/bin/uv", "inspect files", "/tmp/workspace", "auto");
   assert.ok(!auto.args.includes("--mode"));
+});
+
+test("chat invocation persists and resumes a local session without a shell", () => {
+  const result = buildChatInvocation("uv", "/tmp/workspace", "ask", "/tmp/session.json", true);
+  assert.equal(result.command, "uv");
+  assert.deepEqual(result.args, ["run", "seecoder", "chat", "--workspace", "/tmp/workspace", "--event-json", "--save", "/tmp/session.json", "--resume", "/tmp/session.json", "--mode", "ask"]);
 });
 
 test("event parser rejects malformed and non-object data", () => {
