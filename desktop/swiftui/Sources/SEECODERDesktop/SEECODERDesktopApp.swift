@@ -1,9 +1,23 @@
 import SwiftUI
 import AppKit
 
+@MainActor
+final class DesktopAppDelegate: NSObject, NSApplicationDelegate {
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    NSApp.setActivationPolicy(.regular)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.activateWindow() }
+  }
+
+  func activateWindow() {
+    NSApp.activate(ignoringOtherApps: true)
+    NSApp.windows.first(where: { $0.isVisible })?.makeKeyAndOrderFront(nil)
+  }
+}
+
 @main
 struct SEECODERDesktopApp: App {
   @StateObject private var store = DesktopStore()
+  @NSApplicationDelegateAdaptor(DesktopAppDelegate.self) private var appDelegate
 
   init() {
     if let url = Bundle.module.url(forResource: "seecoder-logo", withExtension: "png"), let image = NSImage(contentsOf: url) {
@@ -12,7 +26,7 @@ struct SEECODERDesktopApp: App {
   }
 
   var body: some Scene {
-    WindowGroup("SEECODER") { DesktopRoot().environmentObject(store).frame(minWidth: 1000, minHeight: 640) }
+    WindowGroup("SEECODER") { DesktopRoot().environmentObject(store).frame(minWidth: 1000, minHeight: 640).onAppear { appDelegate.activateWindow() } }
       .windowStyle(.hiddenTitleBar)
       .defaultSize(width: 1360, height: 860)
       .windowResizability(.contentMinSize)
