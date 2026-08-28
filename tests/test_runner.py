@@ -9,7 +9,7 @@ from typing import Any
 
 from seecoder.config import Settings
 from seecoder.model_client import ModelClientError
-from seecoder.runner import AgentRunner
+from seecoder.runner import DEFAULT_SYSTEM_PROMPT, AgentRunner
 from seecoder.trace import TraceWriter
 from seecoder.types import ChatMessage, ModelResponse, RunState, ToolCall
 
@@ -45,6 +45,9 @@ class AgentRunnerTests(unittest.TestCase):
         values: dict[str, Any] = {"api_key": "test-key", "model": "fake", "max_steps": 5}
         values.update(overrides)
         return Settings(**values)
+
+    def test_system_prompt_reserves_workspace_root_rename_for_desktop(self) -> None:
+        self.assertIn("desktop application owns selecting, creating, and renaming the workspace root", DEFAULT_SYSTEM_PROMPT.lower())
 
     def test_full_read_write_command_loop(self) -> None:
         (self.workspace / "bug.txt").write_text("broken", encoding="utf-8")
