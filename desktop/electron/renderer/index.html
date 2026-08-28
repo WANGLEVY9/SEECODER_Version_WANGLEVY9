@@ -48,6 +48,10 @@
           <div class="activity-heading"><div><span class="eyebrow">执行轨迹</span><h2>运行状态</h2></div><span id="state-badge" class="state-badge">就绪</span></div>
           <p class="activity-description">每一步都来自自研 AgentRunner 的本地 JSONL 事件，不使用托管执行服务。</p>
           <div id="cost-badge" class="cost-badge">tokens 0</div>
+          <section class="environment-card" aria-label="工作区环境信息">
+            <div class="environment-card-heading"><span>环境信息</span><button id="refresh-environment" class="refresh-button" title="刷新环境信息">↻</button></div>
+            <div id="environment-details" class="environment-details">正在读取本地工作区…</div>
+          </section>
           <div id="activity-list" class="activity-list"></div>
           <button id="about-button" class="about-button">设计与安全说明 <span>→</span></button>
         </div>

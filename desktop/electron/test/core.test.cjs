@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildBackendInvocation, parseEventLine } = require("../core.cjs");
+const { buildBackendInvocation, parseEventLine, parseGitEnvironment } = require("../core.cjs");
 
 test("backend invocation is literal argv and never enables host shell", () => {
   const result = buildBackendInvocation("/usr/local/bin/uv", "inspect files", "/tmp/workspace");
@@ -24,4 +24,19 @@ test("event parser rejects malformed and non-object data", () => {
   assert.deepEqual(parseEventLine('{"event":"tool_result","data":{"ok":true}}'), { event: "tool_result", data: { ok: true } });
   assert.equal(parseEventLine("not json"), null);
   assert.equal(parseEventLine('{"event":"x","data":[]}'), null);
+});
+
+test("git environment parser produces file and line-change summaries", () => {
+  const result = parseGitEnvironment({
+    branch: "main\n",
+    nameStatus: "M\tsrc/tag_tools.py\nM\tREADME.md\n",
+    numstat: "1\t1\tsrc/tag_tools.py\n3\t0\tREADME.md\n",
+  });
+  assert.deepEqual(result, {
+    isRepository: true, branch: "main", added: 4, deleted: 1,
+    files: [
+      { path: "src/tag_tools.py", status: "M", added: 1, deleted: 1 },
+      { path: "README.md", status: "M", added: 3, deleted: 0 },
+    ],
+  });
 });

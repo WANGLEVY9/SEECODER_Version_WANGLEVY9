@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("seecoderDesktop", {
   chooseWorkspace: () => ipcRenderer.invoke("seecoder:choose-workspace"),
+  inspectEnvironment: (workspace) => ipcRenderer.invoke("seecoder:inspect-environment", workspace),
   startRun: (payload) => ipcRenderer.invoke("seecoder:start-run", payload),
   stopRun: () => ipcRenderer.invoke("seecoder:stop-run"),
   approve: (decision) => ipcRenderer.invoke("seecoder:approve", decision),
