@@ -127,7 +127,7 @@ final class DesktopStore: ObservableObject {
       catch { self.process = nil; self.inputPipe = nil }
     }
     let sessionID = sessions[index].id.uuidString; let workspace = sessions[index].workspace; let storage = sessionStorageURL(id: sessionID).path
-    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = ["uv", "run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage, "--mode", mode]
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.currentDirectoryURL = projectRootURL(); p.arguments = ["uv", "run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage, "--mode", mode]
     let input = Pipe(); let output = Pipe(); let error = Pipe(); p.standardInput = input; p.standardOutput = output; p.standardError = error; process = p; inputPipe = input; outputBuffer = ""
     output.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.consume(String(decoding: data, as: UTF8.self)) } }
     error.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.recordCLIError(String(decoding: data, as: UTF8.self)) } }
@@ -184,6 +184,14 @@ final class DesktopStore: ObservableObject {
   private func appendStreaming(_ text: String) { guard let index = currentIndex else { return }; if sessions[index].messages.last?.role == .agent { sessions[index].messages[sessions[index].messages.count - 1] = ChatMessage(.agent, sessions[index].messages.last!.content + text) } else { sessions[index].messages.append(ChatMessage(.agent, text)) } }
   private func append(_ role: ChatMessage.Role, _ text: String) { guard let index = currentIndex else { return }; sessions[index].messages.append(ChatMessage(role, text)); save() }
   private func run(_ executable: String, _ arguments: [String]) -> String { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = [executable] + arguments; let pipe = Pipe(); p.standardOutput = pipe; do { try p.run(); p.waitUntilExit(); return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) } catch { return "" } }
+  private func projectRootURL() -> URL {
+    var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    for _ in 0..<8 {
+      if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("pyproject.toml").path) { return candidate }
+      let parent = candidate.deletingLastPathComponent(); if parent.path == candidate.path { break }; candidate = parent
+    }
+    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+  }
   private func classifyDiff(_ text: String) -> DiffLine { let kind: DiffLine.Kind = text.hasPrefix("@@") ? .hunk : text.hasPrefix("+++ ") || text.hasPrefix("--- ") ? .file : text.hasPrefix("+") ? .add : text.hasPrefix("-") ? .remove : text.hasPrefix("diff ") || text.hasPrefix("index ") ? .meta : .context; return DiffLine(kind: kind, text: text) }
   private func shortPath(_ path: String) -> String { URL(fileURLWithPath: path).lastPathComponent }
   private func sessionStorageURL(id: String) -> URL { let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SEECODER/sessions", isDirectory: true); try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); return root.appendingPathComponent(id + ".json") }
