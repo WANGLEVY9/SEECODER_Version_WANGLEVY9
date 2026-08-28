@@ -28,6 +28,7 @@ struct SessionModel: Identifiable, Codable, Hashable {
 }
 
 struct DiffLine: Identifiable, Hashable { let id = UUID(); let kind: Kind; let text: String; enum Kind { case meta, file, hunk, add, remove, context } }
+enum RenameKind: String, Identifiable { case session, workspace; var id: String { rawValue } }
 
 @MainActor
 final class DesktopStore: ObservableObject {
@@ -43,6 +44,9 @@ final class DesktopStore: ObservableObject {
   @Published var workspaceParent = ""
   @Published var workspaceName = ""
   @Published var workspaceError = ""
+  @Published var renameKind: RenameKind?
+  @Published var renameText = ""
+  @Published var renameError = ""
   private var process: Process?
   private var inputPipe: Pipe?
   private let persistenceKey = "seecoder.swiftui.sessions.v1"
@@ -71,6 +75,21 @@ final class DesktopStore: ObservableObject {
   }
   func applyWorkspace(_ path: String, activityText: String) { guard let index = currentIndex else { return }; sessions[index].workspace = path; sessions[index].updatedAt = .now; activity.insert(activityText + " · " + shortPath(path), at: 0); reviewFile = nil; diffLines = []; save() }
   func openCreateWorkspace() { workspaceParent = ""; workspaceName = ""; workspaceError = ""; showCreateWorkspace = true }
+  func openRenameSession(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; renameText = session.title; renameError = ""; renameKind = .session }
+  func openRenameWorkspace(_ session: SessionModel) { guard !isRunning, !session.workspace.isEmpty else { return }; selectedID = session.id; renameText = URL(fileURLWithPath: session.workspace).lastPathComponent; renameError = ""; renameKind = .workspace }
+  func renameCurrent(_ kind: RenameKind) {
+    let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty else { renameError = "名称不能为空。"; return }
+    guard let index = currentIndex else { return }
+    if kind == .session { sessions[index].title = name; sessions[index].updatedAt = .now; renameKind = nil; save(); return }
+    guard !name.contains("/"), !name.contains("\\"), name != ".", name != "..", name.count <= 80 else { renameError = "请输入有效的单层文件夹名称。"; return }
+    let oldPath = sessions[index].workspace; guard !oldPath.isEmpty else { return }
+    let oldURL = URL(fileURLWithPath: oldPath); let target = oldURL.deletingLastPathComponent().appendingPathComponent(name)
+    guard target.path != oldPath else { renameKind = nil; return }
+    guard !FileManager.default.fileExists(atPath: target.path) else { renameError = "同一目录下已存在同名文件夹。"; return }
+    do { try FileManager.default.moveItem(at: oldURL, to: target); for i in sessions.indices where sessions[i].workspace == oldPath { sessions[i].workspace = target.path; sessions[i].updatedAt = .now }; activity.insert("已重命名本地工作区 · \(name)", at: 0); renameKind = nil; save() }
+    catch { renameError = "无法重命名该文件夹。请确认其未被占用且父目录可写。" }
+  }
   func send() {
     let task = draft.trimmingCharacters(in: .whitespacesAndNewlines); guard !task.isEmpty, hasWorkspace, !isRunning, let index = currentIndex else { return }
     sessions[index].messages.append(ChatMessage(.user, task)); sessions[index].title = sessions[index].title == "新对话" ? String(task.prefix(24)) : sessions[index].title; sessions[index].updatedAt = .now; draft = ""; isRunning = true; activity.insert("正在启动本地 AgentRunner", at: 0); save()
@@ -126,12 +145,13 @@ struct DesktopRoot: View {
     .environment(\.colorScheme, .light)
     .preferredColorScheme(.light)
     .sheet(isPresented: $store.showCreateWorkspace) { CreateWorkspaceSheet() }
+    .sheet(item: $store.renameKind) { kind in RenameSheet(kind: kind) }
   }
 }
 
 struct Sidebar: View {
   @EnvironmentObject var store: DesktopStore
-  var body: some View { VStack(alignment: .leading, spacing: 10) { HStack { Image("seecoder-logo", bundle: .module).resizable().frame(width: 25, height: 25).clipShape(RoundedRectangle(cornerRadius: 7)); Text("SEECODER").font(.system(size: 15, weight: .bold)).foregroundStyle(Color.ink); Spacer() }.padding(.bottom, 12); Button(action: store.newSession) { Label("新对话", systemImage: "square.and.pencil") }.buttonStyle(SidebarAction()); Button(action: store.chooseWorkspace) { Label("打开工作区", systemImage: "folder") }.buttonStyle(SidebarAction()); Button(action: store.openCreateWorkspace) { Label("新建工作区", systemImage: "folder.badge.plus") }.buttonStyle(SidebarAction()); Text("项目会话").font(.caption.weight(.semibold)).foregroundStyle(Color.muted).padding(.top, 16); ScrollView { LazyVStack(spacing: 3) { ForEach(store.sessions) { session in Button { store.select(session) } label: { VStack(alignment: .leading, spacing: 3) { Text(session.title).lineLimit(1).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.ink); Text(session.workspace.isEmpty ? "未选择工作区" : URL(fileURLWithPath: session.workspace).lastPathComponent).lineLimit(1).font(.caption).foregroundStyle(Color.muted) }.frame(maxWidth: .infinity, alignment: .leading).padding(8).background(store.selectedID == session.id ? Color.blue.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain) } } }; Spacer(minLength: 12); Divider(); Label("本地优先", systemImage: "checkmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(.green); Text("会话仅保存在此设备\n不会保存 API key").font(.caption2).foregroundStyle(Color.muted) }.padding(16).background(Color.sidebar) }
+  var body: some View { VStack(alignment: .leading, spacing: 10) { HStack { Image("seecoder-logo", bundle: .module).resizable().frame(width: 25, height: 25).clipShape(RoundedRectangle(cornerRadius: 7)); Text("SEECODER").font(.system(size: 15, weight: .bold)).foregroundStyle(Color.ink); Spacer() }.padding(.bottom, 12); Button(action: store.newSession) { Label("新对话", systemImage: "square.and.pencil") }.buttonStyle(SidebarAction()); Button(action: store.chooseWorkspace) { Label("打开工作区", systemImage: "folder") }.buttonStyle(SidebarAction()); Button(action: store.openCreateWorkspace) { Label("新建工作区", systemImage: "folder.badge.plus") }.buttonStyle(SidebarAction()); Text("项目会话").font(.caption.weight(.semibold)).foregroundStyle(Color.muted).padding(.top, 16); ScrollView { LazyVStack(spacing: 3) { ForEach(store.sessions) { session in HStack(spacing: 4) { Button { store.select(session) } label: { VStack(alignment: .leading, spacing: 3) { Text(session.title).lineLimit(1).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.ink); Text(session.workspace.isEmpty ? "未选择工作区" : URL(fileURLWithPath: session.workspace).lastPathComponent).lineLimit(1).font(.caption).foregroundStyle(Color.muted) }.frame(maxWidth: .infinity, alignment: .leading).padding(8).background(store.selectedID == session.id ? Color.blue.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain); Menu { Button("重命名会话") { store.openRenameSession(session) }; if !session.workspace.isEmpty { Button("重命名工作区") { store.openRenameWorkspace(session) } } } label: { Image(systemName: "ellipsis").frame(width: 20, height: 28) }.menuStyle(.borderlessButton) } } } }; Spacer(minLength: 12); Divider(); Label("本地优先", systemImage: "checkmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(.green); Text("会话仅保存在此设备\n不会保存 API key").font(.caption2).foregroundStyle(Color.muted) }.padding(16).background(Color.sidebar) }
 }
 
 struct Conversation: View {
@@ -166,9 +186,30 @@ struct CreateWorkspaceSheet: View {
         .foregroundStyle(Color.ink)
         .tint(.blue)
         .focused($nameFieldFocused)
-        .onSubmit(store.createWorkspace)
       if !store.workspaceError.isEmpty { Text(store.workspaceError).font(.caption).foregroundStyle(.red) }
       HStack { Spacer(); Button("取消") { store.showCreateWorkspace = false }; Button("创建并开始", action: store.createWorkspace).buttonStyle(.borderedProminent) }
+    }
+    .padding(26)
+    .frame(width: 460)
+    .onAppear { DispatchQueue.main.async { nameFieldFocused = true } }
+  }
+}
+struct RenameSheet: View {
+  @EnvironmentObject var store: DesktopStore
+  let kind: RenameKind
+  @FocusState private var nameFieldFocused: Bool
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text(kind == .session ? "重命名会话" : "重命名本地工作区").font(.title2.bold()).foregroundStyle(Color.ink)
+      Text(kind == .session ? "仅更新本机保存的会话标题。" : "会在同一父目录下重命名该本地文件夹，并同步本机引用它的会话。").font(.subheadline).foregroundStyle(Color.muted)
+      TextField(kind == .session ? "会话名称" : "文件夹名称", text: $store.renameText)
+        .textFieldStyle(.roundedBorder)
+        .foregroundStyle(Color.ink)
+        .tint(.blue)
+        .focused($nameFieldFocused)
+      if !store.renameError.isEmpty { Text(store.renameError).font(.caption).foregroundStyle(.red) }
+      HStack { Spacer(); Button("取消") { store.renameKind = nil }; Button("重命名") { store.renameCurrent(kind) }.buttonStyle(.borderedProminent) }
     }
     .padding(26)
     .frame(width: 460)
