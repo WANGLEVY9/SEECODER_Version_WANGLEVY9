@@ -46,6 +46,10 @@ struct ChatMessage: Identifiable, Codable, Hashable {
 struct SessionModel: Identifiable, Codable, Hashable {
   var id = UUID(); var title = "新对话"; var workspace = ""; var messages: [ChatMessage] = []; var updatedAt = Date.now
 }
+struct DesktopPersistence: Codable {
+  let sessions: [SessionModel]
+  let selectedID: UUID?
+}
 
 struct DiffLine: Identifiable, Hashable { let id = UUID(); let kind: Kind; let text: String; enum Kind { case meta, file, hunk, add, remove, context } }
 enum RenameKind: String, Identifiable { case session, workspace; var id: String { rawValue } }
@@ -86,15 +90,15 @@ final class DesktopStore: ObservableObject {
   private var process: Process?
   private var inputPipe: Pipe?
   private var outputBuffer = ""
-  private let persistenceKey = "seecoder.swiftui.sessions.v1"
+  private let legacyPersistenceKey = "seecoder.swiftui.sessions.v1"
 
-  init() { load(); if sessions.isEmpty { newSession() }; selectedID = sessions.first?.id }
+  init() { load(); if sessions.isEmpty { newSession() }; if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }; save() }
   var currentIndex: Int? { sessions.firstIndex { $0.id == selectedID } }
   var current: SessionModel? { currentIndex.map { sessions[$0] } }
   var hasWorkspace: Bool { !(current?.workspace ?? "").isEmpty }
 
   func newSession() { sessions.insert(SessionModel(), at: 0); selectedID = sessions[0].id; reviewFile = nil; diffLines = []; save() }
-  func select(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; reviewFile = nil; diffLines = [] }
+  func select(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; reviewFile = nil; diffLines = []; save() }
   func chooseWorkspace() {
     let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "选择开发区域"
     if panel.runModal() == .OK, let url = panel.url { applyWorkspace(url.path, activityText: "已选择本地工作区") }
@@ -216,8 +220,19 @@ final class DesktopStore: ObservableObject {
   private func classifyDiff(_ text: String) -> DiffLine { let kind: DiffLine.Kind = text.hasPrefix("@@") ? .hunk : text.hasPrefix("+++ ") || text.hasPrefix("--- ") ? .file : text.hasPrefix("+") ? .add : text.hasPrefix("-") ? .remove : text.hasPrefix("diff ") || text.hasPrefix("index ") ? .meta : .context; return DiffLine(kind: kind, text: text) }
   private func shortPath(_ path: String) -> String { URL(fileURLWithPath: path).lastPathComponent }
   private func sessionStorageURL(id: String) -> URL { let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SEECODER/sessions", isDirectory: true); try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); return root.appendingPathComponent(id + ".json") }
-  private func save() { if let data = try? JSONEncoder().encode(sessions) { UserDefaults.standard.set(data, forKey: persistenceKey) } }
-  private func load() { if let data = UserDefaults.standard.data(forKey: persistenceKey), let stored = try? JSONDecoder().decode([SessionModel].self, from: data) { sessions = stored } }
+  private var persistenceURL: URL {
+    let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SEECODER", isDirectory: true)
+    try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    return root.appendingPathComponent("desktop-sessions.json")
+  }
+  private func save() {
+    let snapshot = DesktopPersistence(sessions: sessions, selectedID: selectedID)
+    if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: persistenceURL, options: .atomic) }
+  }
+  private func load() {
+    if let data = try? Data(contentsOf: persistenceURL), let stored = try? JSONDecoder().decode(DesktopPersistence.self, from: data) { sessions = stored.sessions; selectedID = stored.selectedID; return }
+    if let data = UserDefaults.standard.data(forKey: legacyPersistenceKey), let stored = try? JSONDecoder().decode([SessionModel].self, from: data) { sessions = stored }
+  }
 }
 
 struct DesktopRoot: View {
@@ -248,7 +263,44 @@ struct Conversation: View {
 }
 
 struct Onboarding: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(spacing: 12) { Spacer(minLength: 48); Image("seecoder-logo", bundle: .module).resizable().frame(width: 50, height: 50).clipShape(RoundedRectangle(cornerRadius: 15)); Text("选择一个开发区域").font(.system(size: 27, weight: .bold)).foregroundStyle(Color.ink); Text("选择已有本地文件夹，或创建一个新的会话工作区。\n所有本地操作都会限制在你选定的目录中。").font(.system(size: 14)).multilineTextAlignment(.center).foregroundStyle(Color.muted); HStack { Button("选择本地文件夹", action: store.chooseWorkspace).buttonStyle(.borderedProminent); Button("新建会话工作区", action: store.openCreateWorkspace).buttonStyle(.bordered) }; Spacer(minLength: 28) }.frame(maxWidth: .infinity, minHeight: 260) } }
-struct MessageBubble: View { let message: ChatMessage; var body: some View { VStack(alignment: .leading, spacing: 7) { Label(message.role == .user ? "你" : message.role == .agent ? "SEECODER" : "本地状态", systemImage: message.role == .user ? "person.fill" : "sparkle").font(.caption.weight(.semibold)).foregroundStyle(message.role == .user ? Color.brandBlue : Color.brandGreen); Text(message.content).textSelection(.enabled).font(.system(size: 14)).lineSpacing(5).padding(15).frame(maxWidth: 760, alignment: .leading).background(message.role == .user ? Color.brandCyan.opacity(0.14) : Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) }.id(message.id) } }
+struct MessageBubble: View { let message: ChatMessage; var body: some View { VStack(alignment: .leading, spacing: 7) { Label(message.role == .user ? "你" : message.role == .agent ? "SEECODER" : "本地状态", systemImage: message.role == .user ? "person.fill" : "sparkle").font(.caption.weight(.semibold)).foregroundStyle(message.role == .user ? Color.brandBlue : Color.brandGreen); Group { if message.role == .agent { MarkdownMessage(source: message.content) } else { Text(message.content).textSelection(.enabled).font(.system(size: 14)).lineSpacing(5).foregroundStyle(Color.ink) } }.padding(15).frame(maxWidth: 760, alignment: .leading).background(message.role == .user ? Color.brandCyan.opacity(0.14) : Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) }.id(message.id) } }
+struct MarkdownMessage: View {
+  private enum Block { case prose([String]), code(language: String, body: String) }
+  let source: String
+  private var blocks: [Block] {
+    var result: [Block] = []; var prose: [String] = []; var code: [String] = []; var language = ""; var inCode = false
+    func flushProse() { if !prose.isEmpty { result.append(.prose(prose)); prose = [] } }
+    for raw in source.split(separator: "\n", omittingEmptySubsequences: false) {
+      let line = String(raw)
+      if line.hasPrefix("```") {
+        if inCode { result.append(.code(language: language, body: code.joined(separator: "\n"))); code = []; language = ""; inCode = false }
+        else { flushProse(); language = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces); inCode = true }
+      } else if inCode { code.append(line) } else { prose.append(line) }
+    }
+    if inCode { result.append(.code(language: language, body: code.joined(separator: "\n"))) } else { flushProse() }
+    return result
+  }
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+        switch block {
+        case .prose(let lines): VStack(alignment: .leading, spacing: 5) { ForEach(Array(lines.enumerated()), id: \.offset) { _, line in markdownLine(line) } }
+        case .code(let language, let body): VStack(alignment: .leading, spacing: 7) { if !language.isEmpty { Text(language.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(Color.muted) }; ScrollView(.horizontal, showsIndicators: false) { Text(body.isEmpty ? " " : body).textSelection(.enabled).font(.system(size: 12, design: .monospaced)).foregroundStyle(Color.ink).frame(maxWidth: .infinity, alignment: .leading) } }.padding(11).background(Color.codeSurface, in: RoundedRectangle(cornerRadius: 9))
+        }
+      }
+    }
+  }
+  @ViewBuilder private func markdownLine(_ line: String) -> some View {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    if trimmed.isEmpty { Spacer().frame(height: 4) }
+    else if trimmed.hasPrefix("### ") { Text(attributed(String(trimmed.dropFirst(4)))).font(.headline).foregroundStyle(Color.ink) }
+    else if trimmed.hasPrefix("## ") { Text(attributed(String(trimmed.dropFirst(3)))).font(.title3.weight(.bold)).foregroundStyle(Color.ink) }
+    else if trimmed.hasPrefix("# ") { Text(attributed(String(trimmed.dropFirst(2)))).font(.title2.weight(.bold)).foregroundStyle(Color.ink) }
+    else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") { HStack(alignment: .firstTextBaseline, spacing: 7) { Text("•").foregroundStyle(Color.brandBlue); Text(attributed(String(trimmed.dropFirst(2)))).foregroundStyle(Color.ink) } }
+    else { Text(attributed(line)).foregroundStyle(Color.ink) }
+  }
+  private func attributed(_ text: String) -> AttributedString { (try? AttributedString(markdown: text)) ?? AttributedString(text) }
+}
 struct ApprovalCard: View {
   @EnvironmentObject var store: DesktopStore
   var body: some View {
@@ -337,4 +389,4 @@ struct RenameSheet: View {
   }
 }
 struct SidebarAction: ButtonStyle { func makeBody(configuration: Configuration) -> some View { configuration.label.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8).padding(.horizontal, 9).background(configuration.isPressed ? Color.brandBlue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7)) } }
-extension Color { static let canvas = Color(red: 0.985, green: 0.982, blue: 0.972); static let sidebar = Color(red: 0.955, green: 0.978, blue: 0.984); static let inspector = Color(red: 0.978, green: 0.976, blue: 0.958); static let line = Color(red: 0.83, green: 0.89, blue: 0.91); static let ink = Color(red: 0.10, green: 0.18, blue: 0.23); static let muted = Color(red: 0.35, green: 0.45, blue: 0.51); static let brandBlue = Color(red: 0.10, green: 0.48, blue: 0.84); static let brandCyan = Color(red: 0.30, green: 0.72, blue: 0.92); static let brandGreen = Color(red: 0.14, green: 0.69, blue: 0.43); static let brandAmber = Color(red: 0.98, green: 0.63, blue: 0.12) }
+extension Color { static let canvas = Color(red: 0.985, green: 0.982, blue: 0.972); static let sidebar = Color(red: 0.955, green: 0.978, blue: 0.984); static let inspector = Color(red: 0.978, green: 0.976, blue: 0.958); static let codeSurface = Color(red: 0.94, green: 0.97, blue: 0.98); static let line = Color(red: 0.83, green: 0.89, blue: 0.91); static let ink = Color(red: 0.10, green: 0.18, blue: 0.23); static let muted = Color(red: 0.35, green: 0.45, blue: 0.51); static let brandBlue = Color(red: 0.10, green: 0.48, blue: 0.84); static let brandCyan = Color(red: 0.30, green: 0.72, blue: 0.92); static let brandGreen = Color(red: 0.14, green: 0.69, blue: 0.43); static let brandAmber = Color(red: 0.98, green: 0.63, blue: 0.12) }
