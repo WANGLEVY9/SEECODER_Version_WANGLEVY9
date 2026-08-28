@@ -316,7 +316,20 @@ class AgentRunner:
                     final_text = response.content or "Model ended without a final textual response."
                     return self._finish(RunState.FINAL, final_text, steps, usage=total_usage)
 
-                self._emit("tool_dispatch", {"step": step, "count": len(response.tool_calls)})
+                self._emit(
+                    "tool_dispatch",
+                    {
+                        "step": step,
+                        "count": len(response.tool_calls),
+                        "calls": [
+                            {
+                                "name": call.name,
+                                "purpose": _plan_description(call),
+                            }
+                            for call in response.tool_calls
+                        ],
+                    },
+                )
                 calls = response.tool_calls
                 if calls and all(is_read_only(call.name) for call in calls):
                     results = self._dispatch_parallel(calls)
@@ -329,8 +342,12 @@ class AgentRunner:
                     )
                     self._emit(
                         "tool_result",
-                        {"name": call.name, "ok": result.ok,
-                         "error": result.error.kind if result.error else None},
+                        {
+                            "name": call.name,
+                            "ok": result.ok,
+                            "error": result.error.kind if result.error else None,
+                            "purpose": _plan_description(call),
+                        },
                     )
                     messages.append(
                         ChatMessage(

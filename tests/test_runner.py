@@ -69,6 +69,31 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertEqual(len(model.requests), 4)
         self.assertIn("verified", outcome.final_text)
 
+    def test_tool_events_include_name_purpose_and_outcome(self) -> None:
+        events: list[tuple[str, dict[str, Any]]] = []
+        (self.workspace / "fixture.txt").write_text("inspect me", encoding="utf-8")
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("read", "read_file", {"path": "fixture.txt"}),)),
+                ModelResponse("Inspection complete."),
+            ]
+        )
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(), model_client=model, workspace=self.workspace,
+            event_sink=lambda event, data: events.append((event, data)),
+        )
+
+        outcome = runner.run("Inspect one file.")
+
+        self.assertEqual(outcome.state, RunState.FINAL)
+        dispatch = next(data for event, data in events if event == "tool_dispatch")
+        self.assertEqual(dispatch["calls"][0]["name"], "read_file")
+        self.assertIn("read_file", dispatch["calls"][0]["purpose"])
+        result = next(data for event, data in events if event == "tool_result")
+        self.assertEqual(result["name"], "read_file")
+        self.assertTrue(result["ok"])
+        self.assertIn("purpose", result)
+
     def test_repeated_tool_errors_stop_the_run(self) -> None:
         model = ScriptedModel(
             [
