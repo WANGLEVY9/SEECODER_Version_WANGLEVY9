@@ -56,6 +56,8 @@ struct ProjectGroup: Identifiable {
   let name: String
   let workspace: String
   let sessions: [SessionModel]
+  let isPinned: Bool
+  let isArchived: Bool
   var isUnassigned: Bool { workspace.isEmpty }
 }
 
@@ -90,6 +92,10 @@ final class DesktopStore: ObservableObject {
   @Published var diffLines: [DiffLine] = []
   @Published var showNewConversation = false
   @Published var showCreateWorkspace = false
+  @Published var showProjectSettings = false
+  @Published var projectSettingsWorkspace = ""
+  @Published var pinnedProjects: Set<String> = []
+  @Published var archivedProjects: Set<String> = []
   @Published var workspaceParent = ""
   @Published var workspaceName = ""
   @Published var workspaceError = ""
@@ -100,8 +106,10 @@ final class DesktopStore: ObservableObject {
   private var inputPipe: Pipe?
   private var outputBuffer = ""
   private let legacyPersistenceKey = "seecoder.swiftui.sessions.v1"
+  private let pinnedProjectsKey = "seecoder.swiftui.pinned-projects.v1"
+  private let archivedProjectsKey = "seecoder.swiftui.archived-projects.v1"
 
-  init() { load(); if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }; save() }
+  init() { load(); loadProjectFlags(); if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }; save() }
   var currentIndex: Int? { sessions.firstIndex { $0.id == selectedID } }
   var current: SessionModel? { currentIndex.map { sessions[$0] } }
   var hasWorkspace: Bool { !(current?.workspace ?? "").isEmpty }
@@ -109,11 +117,15 @@ final class DesktopStore: ObservableObject {
     let grouped = Dictionary(grouping: sessions) { $0.workspace }
     return grouped.keys.sorted { lhs, rhs in
       if lhs.isEmpty != rhs.isEmpty { return !lhs.isEmpty }
+      let lhsArchived = archivedProjects.contains(lhs), rhsArchived = archivedProjects.contains(rhs)
+      if lhsArchived != rhsArchived { return !lhsArchived }
+      let lhsPinned = pinnedProjects.contains(lhs), rhsPinned = pinnedProjects.contains(rhs)
+      if lhsPinned != rhsPinned { return lhsPinned }
       return (lhs.isEmpty ? "未选择项目" : shortPath(lhs)).localizedStandardCompare(lhs.isEmpty ? "未选择项目" : shortPath(rhs)) == .orderedAscending
     }.compactMap { workspace in
       guard let groupedSessions = grouped[workspace] else { return nil }
       let name = workspace.isEmpty ? "未选择项目" : shortPath(workspace)
-      return ProjectGroup(id: workspace.isEmpty ? "unassigned" : workspace, name: name, workspace: workspace, sessions: groupedSessions.sorted { $0.updatedAt > $1.updatedAt })
+      return ProjectGroup(id: workspace.isEmpty ? "unassigned" : workspace, name: name, workspace: workspace, sessions: groupedSessions.sorted { $0.updatedAt > $1.updatedAt }, isPinned: pinnedProjects.contains(workspace), isArchived: archivedProjects.contains(workspace))
     }
   }
 
@@ -133,7 +145,7 @@ final class DesktopStore: ObservableObject {
   func openProject() {
     let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "打开项目"
     guard panel.runModal() == .OK, let url = panel.url else { return }
-    if let session = sessions.first(where: { URL(fileURLWithPath: $0.workspace).standardizedFileURL.path == url.standardizedFileURL.path }) { select(session) }
+    if let session = sessions.first(where: { !$0.workspace.isEmpty && URL(fileURLWithPath: $0.workspace).standardizedFileURL.path == url.standardizedFileURL.path }) { select(session) }
     else { startSession(in: url.path) }
   }
   func chooseWorkspaceForNewConversation() {
@@ -145,6 +157,36 @@ final class DesktopStore: ObservableObject {
     // Wait for the first sheet to dismiss before presenting the project sheet.
     // This avoids a transient "already presenting" warning on macOS.
     DispatchQueue.main.async { self.openCreateWorkspace() }
+  }
+  func togglePinnedProject(_ project: ProjectGroup) {
+    guard !project.isUnassigned else { return }
+    if pinnedProjects.contains(project.workspace) { pinnedProjects.remove(project.workspace) } else { pinnedProjects.insert(project.workspace) }
+    saveProjectFlags()
+  }
+  func toggleArchivedProject(_ project: ProjectGroup) {
+    guard !project.isUnassigned else { return }
+    if archivedProjects.contains(project.workspace) { archivedProjects.remove(project.workspace) } else { archivedProjects.insert(project.workspace) }
+    saveProjectFlags()
+  }
+  func showProjectInFinder(_ project: ProjectGroup) {
+    guard !project.isUnassigned else { return }
+    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.workspace)])
+  }
+  func openProjectSettings(_ project: ProjectGroup) {
+    guard !project.isUnassigned else { return }
+    projectSettingsWorkspace = project.workspace
+    showProjectSettings = true
+  }
+  func detachProject(_ project: ProjectGroup) {
+    guard !project.isUnassigned, !isRunning else { return }
+    for index in sessions.indices where sessions[index].workspace == project.workspace {
+      sessions[index].workspace = ""
+      sessions[index].updatedAt = .now
+    }
+    pinnedProjects.remove(project.workspace)
+    archivedProjects.remove(project.workspace)
+    activity.insert("已从项目列表移除 · 本地文件未删除", at: 0)
+    save()
   }
   func chooseWorkspaceParent() {
     let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "选择父目录"
@@ -334,6 +376,15 @@ final class DesktopStore: ObservableObject {
   private func save() {
     let snapshot = DesktopPersistence(sessions: sessions, selectedID: selectedID)
     if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: persistenceURL, options: .atomic) }
+    saveProjectFlags()
+  }
+  private func loadProjectFlags() {
+    if let paths = UserDefaults.standard.array(forKey: pinnedProjectsKey) as? [String] { pinnedProjects = Set(paths) }
+    if let paths = UserDefaults.standard.array(forKey: archivedProjectsKey) as? [String] { archivedProjects = Set(paths) }
+  }
+  private func saveProjectFlags() {
+    UserDefaults.standard.set(Array(pinnedProjects), forKey: pinnedProjectsKey)
+    UserDefaults.standard.set(Array(archivedProjects), forKey: archivedProjectsKey)
   }
   private func load() {
     if let data = try? Data(contentsOf: persistenceURL), let stored = try? JSONDecoder().decode(DesktopPersistence.self, from: data) { sessions = stored.sessions; selectedID = stored.selectedID; return }
@@ -359,6 +410,7 @@ struct DesktopRoot: View {
     .tint(Color.brandBlue)
     .sheet(isPresented: $store.showNewConversation) { NewConversationSheet() }
     .sheet(isPresented: $store.showCreateWorkspace) { CreateWorkspaceSheet() }
+    .sheet(isPresented: $store.showProjectSettings) { ProjectSettingsSheet() }
     .sheet(item: $store.renameKind) { kind in RenameSheet(kind: kind) }
   }
 }
@@ -413,6 +465,7 @@ struct Sidebar: View {
           }
         }
       }
+      .scrollIndicators(.hidden)
       Spacer(minLength: 12)
       Divider()
       Label("本地优先", systemImage: "checkmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(Color.brandGreen)
@@ -424,17 +477,47 @@ struct Sidebar: View {
 private struct ProjectSection: View {
   @EnvironmentObject var store: DesktopStore
   let project: ProjectGroup
+  @State private var isHovered = false
+
   var body: some View {
     VStack(alignment: .leading, spacing: 3) {
       HStack(spacing: 7) {
-        Image(systemName: project.isUnassigned ? "tray" : "folder").foregroundStyle(Color.muted)
-        Text(project.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.ink).lineLimit(1)
+        Button {
+          if let session = project.sessions.first { store.select(session) }
+        } label: {
+          HStack(spacing: 7) {
+            Image(systemName: project.isUnassigned ? "tray" : project.isArchived ? "archivebox" : "folder")
+            Text(project.name).lineLimit(1)
+          }
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(project.isArchived ? Color.muted : Color.ink)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
         Spacer()
         if !project.isUnassigned {
           Button { store.startSession(in: project.workspace) } label: { Image(systemName: "plus") }.buttonStyle(.plain).foregroundStyle(Color.muted)
-          Menu { Button("新对话") { store.startSession(in: project.workspace) }; Button("重命名项目") { if let session = project.sessions.first { store.openRenameWorkspace(session) } } } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).foregroundStyle(Color.muted)
+          Menu {
+            Button("新对话") { store.startSession(in: project.workspace) }
+            Divider()
+            Button(project.isPinned ? "取消置顶项目" : "置顶项目") { store.togglePinnedProject(project) }
+            Button("在 Finder 中显示") { store.showProjectInFinder(project) }
+            Button("项目设置") { store.openProjectSettings(project) }
+            Button("重命名项目") { if let session = project.sessions.first { store.openRenameWorkspace(session) } }
+            Divider()
+            Button(project.isArchived ? "取消归档项目" : "归档项目") { store.toggleArchivedProject(project) }
+            Button("从项目列表移除") { store.detachProject(project) }
+          } label: {
+            Image(systemName: "ellipsis").frame(width: 20, height: 26)
+          }
+          .menuStyle(.borderlessButton)
+          .foregroundStyle(Color.muted)
         }
-      }.padding(.horizontal, 7).padding(.vertical, 5)
+      }
+      .padding(.horizontal, 7)
+      .padding(.vertical, 5)
+      .background(isHovered ? Color.brandBlue.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 7))
+      .onHover { isHovered = $0 }
       ForEach(project.sessions) { session in
         HStack(spacing: 3) {
           Button { store.select(session) } label: {
@@ -443,7 +526,19 @@ private struct ProjectSection: View {
               Text(session.title).lineLimit(1).font(.system(size: 13, weight: store.selectedID == session.id ? .semibold : .regular)).foregroundStyle(Color.ink)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7).padding(.horizontal, 10).background(store.selectedID == session.id ? Color.brandBlue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
           }.buttonStyle(.plain)
-          Menu { Button("重命名会话") { store.openRenameSession(session) }; if !session.workspace.isEmpty { Button("重命名项目") { store.openRenameWorkspace(session) } } } label: { Image(systemName: "ellipsis").frame(width: 18, height: 26) }.menuStyle(.borderlessButton).foregroundStyle(Color.muted)
+          Menu {
+            Button("重命名会话") { store.openRenameSession(session) }
+            if !session.workspace.isEmpty {
+              Button("重命名项目") { store.openRenameWorkspace(session) }
+              Button("在 Finder 中显示") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.workspace)])
+              }
+            }
+          } label: {
+            Image(systemName: "ellipsis").frame(width: 18, height: 26)
+          }
+          .menuStyle(.borderlessButton)
+          .foregroundStyle(Color.muted)
         }.padding(.leading, 10)
       }
     }
@@ -787,6 +882,49 @@ struct NewConversationSheet: View {
     }
     .padding(26)
     .frame(width: 480)
+  }
+}
+
+struct ProjectSettingsSheet: View {
+  @EnvironmentObject var store: DesktopStore
+
+  private var project: ProjectGroup? {
+    store.projectGroups.first { $0.workspace == store.projectSettingsWorkspace }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      HStack(spacing: 10) {
+        Image(systemName: "folder").foregroundStyle(Color.brandBlue)
+        Text("项目设置").font(.title2.bold()).foregroundStyle(Color.ink)
+      }
+      if let project {
+        VStack(alignment: .leading, spacing: 10) {
+          Text(project.name).font(.headline).foregroundStyle(Color.ink)
+          Label(project.workspace, systemImage: "externaldrive").font(.caption.monospaced()).foregroundStyle(Color.muted).lineLimit(2)
+          Divider()
+          Label("(project.sessions.count) 个会话", systemImage: "bubble.left.and.bubble.right").font(.subheadline).foregroundStyle(Color.muted)
+          Label(project.isPinned ? "已置顶" : "未置顶", systemImage: project.isPinned ? "pin.fill" : "pin").font(.subheadline).foregroundStyle(Color.muted)
+          Label(project.isArchived ? "已归档" : "正常使用中", systemImage: project.isArchived ? "archivebox" : "checkmark.circle").font(.subheadline).foregroundStyle(project.isArchived ? Color.muted : Color.brandGreen)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.canvas, in: RoundedRectangle(cornerRadius: 10))
+        HStack(spacing: 9) {
+          Button("在 Finder 中显示") { store.showProjectInFinder(project) }
+          Button(project.isPinned ? "取消置顶" : "置顶项目") { store.togglePinnedProject(project) }
+          Button("新建会话") { store.showProjectSettings = false; store.startSession(in: project.workspace) }
+        }
+        Button("从项目列表移除（不删除本地文件）") { store.showProjectSettings = false; store.detachProject(project) }
+          .font(.caption)
+          .foregroundStyle(Color.muted)
+      } else {
+        Text("项目已不存在或已从会话列表移除。").foregroundStyle(Color.muted)
+      }
+      HStack { Spacer(); Button("完成") { store.showProjectSettings = false }.buttonStyle(.borderedProminent) }
+    }
+    .padding(26)
+    .frame(width: 520)
   }
 }
 
