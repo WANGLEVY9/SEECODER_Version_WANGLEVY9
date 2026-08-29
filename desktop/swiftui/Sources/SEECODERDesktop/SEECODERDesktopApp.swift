@@ -142,14 +142,21 @@ final class DesktopStore: ObservableObject {
     let sessionID = sessions[index].id.uuidString; let workspace = sessions[index].workspace; let storage = sessionStorageURL(id: sessionID).path
     let root = projectRootURL()
     let envFile = root.appendingPathComponent(".env")
-    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.currentDirectoryURL = root
-    p.arguments = ["uv", "run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage, "--mode", mode]
+    guard let invocation = agentInvocation(root: root, workspace: workspace, storage: storage) else {
+      isRunning = false
+      append(.system, "无法启动本地 AgentRunner：找不到 uv 或项目虚拟环境中的 Python。请先在项目根目录运行 uv sync。")
+      addTimeline("无法启动本地 AgentRunner", detail: "未找到可执行的 uv 或 .venv/bin/python", tone: .failure)
+      return
+    }
+    let p = Process(); p.executableURL = invocation.executable; p.currentDirectoryURL = root
+    p.arguments = invocation.arguments + ["--mode", mode]
+    p.environment = launchEnvironment(root: root)
     if FileManager.default.fileExists(atPath: envFile.path) { p.arguments = (p.arguments ?? []) + ["--env-file", envFile.path] }
     let input = Pipe(); let output = Pipe(); let error = Pipe(); p.standardInput = input; p.standardOutput = output; p.standardError = error; process = p; inputPipe = input; outputBuffer = ""
     output.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.consume(String(decoding: data, as: UTF8.self)) } }
     error.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.recordCLIError(String(decoding: data, as: UTF8.self)) } }
     p.terminationHandler = { [weak self] _ in Task { @MainActor in guard let self else { return }; self.isRunning = false; self.pendingApproval = nil; self.process = nil; self.inputPipe = nil; self.addTimeline("本地 AgentRunner 已结束", detail: "可继续提交下一轮任务", tone: .info); self.save() } }
-    do { try p.run(); try input.fileHandleForWriting.write(contentsOf: Data((task + "\n").utf8)) } catch { isRunning = false; append(.system, "无法启动本地 AgentRunner：\(error.localizedDescription)") }
+    do { try p.run(); try input.fileHandleForWriting.write(contentsOf: Data((task + "\n").utf8)) } catch { isRunning = false; append(.system, "无法启动本地 AgentRunner：\(error.localizedDescription)"); addTimeline("无法启动本地 AgentRunner", detail: invocation.executable.path, tone: .failure) }
   }
   func stop() { process?.terminate(); pendingApproval = nil; addTimeline("正在停止任务", detail: "已向本地 AgentRunner 发送终止请求", tone: .warning); activity.insert("已请求停止本地任务", at: 0) }
   func decideApproval(_ approved: Bool) {
@@ -213,12 +220,42 @@ final class DesktopStore: ObservableObject {
   private func recordCLIError(_ text: String) { let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines); guard !cleaned.isEmpty else { return }; activity.insert("CLI: " + cleaned, at: 0); addTimeline("本地进程提示", detail: cleaned, tone: .info) }
   private func appendStreaming(_ text: String) { guard let index = currentIndex else { return }; if sessions[index].messages.last?.role == .agent { sessions[index].messages[sessions[index].messages.count - 1] = ChatMessage(.agent, sessions[index].messages.last!.content + text) } else { sessions[index].messages.append(ChatMessage(.agent, text)) } }
   private func append(_ role: ChatMessage.Role, _ text: String) { guard let index = currentIndex else { return }; sessions[index].messages.append(ChatMessage(role, text)); save() }
-  private func run(_ executable: String, _ arguments: [String]) -> String { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = [executable] + arguments; let pipe = Pipe(); p.standardOutput = pipe; do { try p.run(); p.waitUntilExit(); return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) } catch { return "" } }
+  private func run(_ executable: String, _ arguments: [String]) -> String { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = [executable] + arguments; let pipe = Pipe(); do { try p.run(); p.waitUntilExit(); return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) } catch { return "" } }
+  private func agentInvocation(root: URL, workspace: String, storage: String) -> (executable: URL, arguments: [String])? {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let configured = ProcessInfo.processInfo.environment["SEECODER_UV"]
+    let inheritedPath = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").map { String($0) + "/uv" } ?? []
+    let uvCandidates = ([configured, "/opt/homebrew/bin/uv", "/usr/local/bin/uv", "\(home)/.local/bin/uv", "\(home)/.cargo/bin/uv"] + inheritedPath).compactMap { $0 }.map(URL.init(fileURLWithPath:))
+    if let uv = uvCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
+      return (uv, ["run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage])
+    }
+    let pythonCandidates = [root.appendingPathComponent(".venv/bin/python"), root.appendingPathComponent(".venv/bin/python3"), URL(fileURLWithPath: "/opt/homebrew/opt/python@3.12/bin/python3.12"), URL(fileURLWithPath: "/opt/homebrew/bin/python3"), URL(fileURLWithPath: "/usr/local/bin/python3")]
+    if let python = pythonCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
+      return (python, ["-m", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage])
+    }
+    return nil
+  }
+  private func launchEnvironment(root: URL) -> [String: String] {
+    var environment = ProcessInfo.processInfo.environment
+    let extraPath = ["/opt/homebrew/bin", "/usr/local/bin", "\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin", "\(FileManager.default.homeDirectoryForCurrentUser.path)/.cargo/bin"]
+    let currentPath = environment["PATH"]?.split(separator: ":").map(String.init) ?? []
+    var paths: [String] = []
+    for path in extraPath + currentPath where !paths.contains(path) { paths.append(path) }
+    environment["PATH"] = paths.joined(separator: ":")
+    let sourcePath = root.appendingPathComponent("src").path
+    environment["PYTHONPATH"] = [sourcePath, environment["PYTHONPATH"]].compactMap { $0 }.joined(separator: ":")
+    environment["SEECODER_PROJECT_ROOT"] = root.path
+    return environment
+  }
   private func projectRootURL() -> URL {
-    var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-    for _ in 0..<8 {
-      if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("pyproject.toml").path) { return candidate }
-      let parent = candidate.deletingLastPathComponent(); if parent.path == candidate.path { break }; candidate = parent
+    let configured = ProcessInfo.processInfo.environment["SEECODER_PROJECT_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+    let candidates = [configured, Bundle.main.bundleURL.deletingLastPathComponent(), URL(fileURLWithPath: #filePath).deletingLastPathComponent(), URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)].compactMap { $0 }
+    for start in candidates {
+      var candidate = start.standardizedFileURL
+      for _ in 0..<12 {
+        if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("pyproject.toml").path) { return candidate }
+        let parent = candidate.deletingLastPathComponent(); if parent.path == candidate.path { break }; candidate = parent
+      }
     }
     return URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
   }
@@ -257,9 +294,28 @@ struct DesktopRoot: View {
   }
 }
 
+struct BrandMark: View {
+  var body: some View {
+    ZStack(alignment: .top) {
+      RoundedRectangle(cornerRadius: 9)
+        .fill(Color.white.opacity(0.78))
+      Image("seecoder-logo", bundle: .module)
+        .resizable()
+        .scaledToFill()
+        .frame(width: 34, height: 27, alignment: .top)
+        .clipped()
+        .padding(3)
+    }
+    .frame(width: 34, height: 34)
+    .clipShape(RoundedRectangle(cornerRadius: 9))
+    .shadow(color: Color.brandBlue.opacity(0.16), radius: 5, y: 2)
+    .accessibilityLabel("SEECODER")
+  }
+}
+
 struct Sidebar: View {
   @EnvironmentObject var store: DesktopStore
-  var body: some View { VStack(alignment: .leading, spacing: 10) { HStack { Image("seecoder-logo", bundle: .module).resizable().frame(width: 25, height: 25).clipShape(RoundedRectangle(cornerRadius: 7)); Text("SEECODER").font(.system(size: 15, weight: .bold)).foregroundStyle(Color.ink); Spacer() }.padding(.bottom, 12); Button(action: store.newSession) { Label("新对话", systemImage: "square.and.pencil") }.buttonStyle(SidebarAction()); Button(action: store.chooseWorkspace) { Label("打开工作区", systemImage: "folder") }.buttonStyle(SidebarAction()); Button(action: store.openCreateWorkspace) { Label("新建工作区", systemImage: "folder.badge.plus") }.buttonStyle(SidebarAction()); Text("项目会话").font(.caption.weight(.semibold)).foregroundStyle(Color.muted).padding(.top, 16); ScrollView { LazyVStack(spacing: 3) { ForEach(store.sessions) { session in HStack(spacing: 4) { Button { store.select(session) } label: { VStack(alignment: .leading, spacing: 3) { Text(session.title).lineLimit(1).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.ink); Text(session.workspace.isEmpty ? "未选择工作区" : URL(fileURLWithPath: session.workspace).lastPathComponent).lineLimit(1).font(.caption).foregroundStyle(Color.muted) }.frame(maxWidth: .infinity, alignment: .leading).padding(8).background(store.selectedID == session.id ? Color.brandBlue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain); Menu { Button("重命名会话") { store.openRenameSession(session) }; if !session.workspace.isEmpty { Button("重命名工作区") { store.openRenameWorkspace(session) } } } label: { Image(systemName: "ellipsis").frame(width: 20, height: 28) }.menuStyle(.borderlessButton) } } } }; Spacer(minLength: 12); Divider(); Label("本地优先", systemImage: "checkmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(Color.brandGreen); Text("会话仅保存在此设备\n不会保存 API key").font(.caption2).foregroundStyle(Color.muted) }.padding(16).background(Color.sidebar) }
+  var body: some View { VStack(alignment: .leading, spacing: 10) { HStack { BrandMark(); Spacer() }.padding(.bottom, 12); Button(action: store.newSession) { Label("新对话", systemImage: "square.and.pencil") }.buttonStyle(SidebarAction()); Button(action: store.chooseWorkspace) { Label("打开工作区", systemImage: "folder") }.buttonStyle(SidebarAction()); Button(action: store.openCreateWorkspace) { Label("新建工作区", systemImage: "folder.badge.plus") }.buttonStyle(SidebarAction()); Text("项目会话").font(.caption.weight(.semibold)).foregroundStyle(Color.muted).padding(.top, 16); ScrollView { LazyVStack(spacing: 3) { ForEach(store.sessions) { session in HStack(spacing: 4) { Button { store.select(session) } label: { VStack(alignment: .leading, spacing: 3) { Text(session.title).lineLimit(1).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.ink); Text(session.workspace.isEmpty ? "未选择工作区" : URL(fileURLWithPath: session.workspace).lastPathComponent).lineLimit(1).font(.caption).foregroundStyle(Color.muted) }.frame(maxWidth: .infinity, alignment: .leading).padding(8).background(store.selectedID == session.id ? Color.brandBlue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain); Menu { Button("重命名会话") { store.openRenameSession(session) }; if !session.workspace.isEmpty { Button("重命名工作区") { store.openRenameWorkspace(session) } } } label: { Image(systemName: "ellipsis").frame(width: 20, height: 28) }.menuStyle(.borderlessButton) } } } }; Spacer(minLength: 12); Divider(); Label("本地优先", systemImage: "checkmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(Color.brandGreen); Text("会话仅保存在此设备\n不会保存 API key").font(.caption2).foregroundStyle(Color.muted) }.padding(16).background(Color.sidebar) }
 }
 
 struct Conversation: View {
