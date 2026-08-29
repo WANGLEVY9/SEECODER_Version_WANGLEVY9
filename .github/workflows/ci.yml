@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Run backend tests
+        run: uv run python -m unittest discover -s tests -v
+      - name: Run headless Tk boundary tests
+        run: uv run python -m unittest discover -s desktop -v
+      - name: Compile Python sources
+        run: uv run python -m compileall -q src desktop
+      - name: Check package metadata
+        run: uv build
+
+  electron:
+    name: Electron compatibility tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: npm
+          cache-dependency-path: desktop/electron/package-lock.json
+      - name: Install locked Node dependencies
+        working-directory: desktop/electron
+        run: npm ci
+      - name: Run Electron boundary tests
+        working-directory: desktop/electron
+        run: npm test
+
+  swiftui:
+    name: SwiftUI macOS build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native desktop
+        working-directory: desktop/swiftui
+        run: swift build
+      - name: Verify bundled logo resource
+        run: test -f desktop/swiftui/Sources/SEECODERDesktop/Resources/seecoder-logo.png
+
+  repository:
+    name: Repository and documentation checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check whitespace errors
+        run: git diff --check
+      - name: Check required brand assets
+        run: |
+          test -s assets/seecoder-logo.png
+          test -s desktop/swiftui/Sources/SEECODERDesktop/Resources/seecoder-logo.png
+          test -s desktop/electron/renderer/assets/seecoder-logo.png
+          cmp assets/seecoder-logo.png desktop/swiftui/Sources/SEECODERDesktop/Resources/seecoder-logo.png
+          cmp assets/seecoder-logo.png desktop/electron/renderer/assets/seecoder-logo.png
+      - name: Reject credentials in tracked files
+        run: |
+          if rg -n --hidden --glob '!.git/**' 'sk-[A-Za-z0-9]{20,}' .; then
+            echo 'A credential-like token was found in tracked content.' >&2
+            exit 1
+          fi
+      - name: Keep README community-facing
+        run: |
+          if rg -n '南京大学|预推免|推免|考核|截止时间|提交物|评委' README.md; then
+            echo 'README contains restricted institutional or submission language.' >&2
+            exit 1
+          fi

@@ -2,12 +2,34 @@
 
 > 一个本地优先、可审计、可扩展的开源 Coding Agent。
 
+<p align="center">
+  <img src="assets/seecoder-logo.png" alt="SEECODER logo" width="220">
+</p>
+
+<p align="center">
+  <a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/actions/workflows/ci.yml"><img src="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/releases"><img src="https://img.shields.io/github/v/release/WANGLEVY9/SEECODER_Version_WANGLEVY9?display_name=tag" alt="Latest release"></a>
+</p>
+
 SEECODER 面向需要真实修改代码的个人开发者和社区贡献者。它把大语言模型当作“下一步行动的建议者”，把文件读写、命令执行、Git 操作、审批和会话状态保留在本地内核中。模型可以提出工具调用，但每个调用都必须经过本地解析、权限判断和执行，再把结果回传给模型继续决策。
 
 - 项目仓库：[WANGLEVY9/SEECODER_Version_WANGLEVY9](https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9)
 - 默认模型配置：DeepSeek V4 Flash（可替换为其他 OpenAI-compatible 服务）
 - 推荐入口：Python CLI + 原生 macOS SwiftUI 桌面端
 - 设计原则：本地执行、最小权限、可恢复会话、可追踪事件、失败可解释
+
+### 品牌视觉
+
+SEECODER 图标由橙、天蓝、绿、深蓝四个几何色块组成。仓库内的 `assets/seecoder-logo.png` 是唯一的品牌源文件，SwiftUI 和 Electron 使用其同源副本，避免桌面端和文档出现不一致的标识。界面颜色 token 与图标保持同一套明度关系：
+
+| Token | Hex | 用途 |
+| --- | --- | --- |
+| `brandAmber` | `#FAA11F` | 新建、提醒、待批准状态 |
+| `brandCyan` | `#4DB8EB` | 用户消息、辅助背景 |
+| `brandGreen` | `#24B06E` | 成功、本地优先、完成状态 |
+| `brandBlue` | `#1A7AD6` | 主操作、链接、运行状态 |
+| `ink` | `#1A2E3B` | 正文和代码文字 |
+| `canvas` | `#FBFAF7` | 主内容背景 |
 
 ## 项目定位
 
@@ -210,6 +232,22 @@ UV_CACHE_DIR=/private/tmp/seecoder-uv-cache \
 
 最近一次离线回归基线为 Python 后端 **75/75**，SwiftUI 原生端编译通过；Electron 与 Tk 兼容端分别提供边界和启动测试。真实模型、网络搜索和宿主命令的结果取决于本机配置，不能用离线 fake model 代替声明为端到端验证。
 
+## CI/CD 流水线
+
+`.github/workflows/ci.yml` 在每次 Pull Request、`main` 推送或手动触发时运行：
+
+- Python 3.12/3.13 锁定依赖、75 项后端回归、Tk 边界测试、编译检查和包构建。
+- Node.js 22.12 的 Electron `npm ci` 与 8 项兼容端测试。
+- macOS 14 上的 SwiftUI 构建和品牌资源检查。
+- README 语境审计、`git diff --check`、品牌资产一致性和凭据样式扫描。
+
+推送形如 `v1.0.0` 的 Git tag 会触发 `.github/workflows/release.yml`，构建 Python wheel/sdist、未签名的 macOS `.app` 压缩包和 Electron 兼容端源码包，并自动生成 GitHub Release。macOS 包目前未配置开发者证书和 notarization，发布到生产环境前应由维护者补充签名流程。
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## 仓库结构
 
 ```text
@@ -225,6 +263,8 @@ desktop/
 ├── swiftui/           # 推荐的原生 macOS 桌面端
 ├── electron/          # 兼容展示层
 └── run_desktop*.sh    # 启动脚本
+assets/
+└── seecoder-logo.png  # 品牌源图标（SwiftUI/Electron 同源）
 tests/                 # 后端、工具、协议和安全边界测试
 docs/                  # 架构、边界和验证记录
 demo_workspace/        # 可复现实例工作区
