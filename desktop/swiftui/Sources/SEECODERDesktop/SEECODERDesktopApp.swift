@@ -96,6 +96,7 @@ final class DesktopStore: ObservableObject {
   @Published var projectSettingsWorkspace = ""
   @Published var pinnedProjects: Set<String> = []
   @Published var archivedProjects: Set<String> = []
+  @Published var archivedSessions: Set<UUID> = []
   @Published var workspaceParent = ""
   @Published var workspaceName = ""
   @Published var workspaceError = ""
@@ -108,8 +109,9 @@ final class DesktopStore: ObservableObject {
   private let legacyPersistenceKey = "seecoder.swiftui.sessions.v1"
   private let pinnedProjectsKey = "seecoder.swiftui.pinned-projects.v1"
   private let archivedProjectsKey = "seecoder.swiftui.archived-projects.v1"
+  private let archivedSessionsKey = "seecoder.swiftui.archived-sessions.v1"
 
-  init() { load(); loadProjectFlags(); if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }; save() }
+  init() { load(); loadProjectFlags(); loadSessionFlags(); cleanupEmptyPlaceholderSessions(); if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }; save() }
   var currentIndex: Int? { sessions.firstIndex { $0.id == selectedID } }
   var current: SessionModel? { currentIndex.map { sessions[$0] } }
   var hasWorkspace: Bool { !(current?.workspace ?? "").isEmpty }
@@ -125,7 +127,11 @@ final class DesktopStore: ObservableObject {
     }.compactMap { workspace in
       guard let groupedSessions = grouped[workspace] else { return nil }
       let name = workspace.isEmpty ? "未选择项目" : shortPath(workspace)
-      return ProjectGroup(id: workspace.isEmpty ? "unassigned" : workspace, name: name, workspace: workspace, sessions: groupedSessions.sorted { $0.updatedAt > $1.updatedAt }, isPinned: pinnedProjects.contains(workspace), isArchived: archivedProjects.contains(workspace))
+      return ProjectGroup(id: workspace.isEmpty ? "unassigned" : workspace, name: name, workspace: workspace, sessions: groupedSessions.sorted { lhs, rhs in
+        let lhsArchived = archivedSessions.contains(lhs.id), rhsArchived = archivedSessions.contains(rhs.id)
+        if lhsArchived != rhsArchived { return !lhsArchived }
+        return lhs.updatedAt > rhs.updatedAt
+      }, isPinned: pinnedProjects.contains(workspace), isArchived: archivedProjects.contains(workspace))
     }
   }
 
@@ -167,6 +173,18 @@ final class DesktopStore: ObservableObject {
     guard !project.isUnassigned else { return }
     if archivedProjects.contains(project.workspace) { archivedProjects.remove(project.workspace) } else { archivedProjects.insert(project.workspace) }
     saveProjectFlags()
+  }
+  func isSessionArchived(_ session: SessionModel) -> Bool { archivedSessions.contains(session.id) }
+  func toggleArchivedSession(_ session: SessionModel) {
+    guard !isRunning else { return }
+    if archivedSessions.contains(session.id) {
+      archivedSessions.remove(session.id)
+      activity.insert("已恢复会话 · \(session.title)", at: 0)
+    } else {
+      archivedSessions.insert(session.id)
+      activity.insert("已归档会话 · \(session.title)", at: 0)
+    }
+    save()
   }
   func showProjectInFinder(_ project: ProjectGroup) {
     guard !project.isUnassigned else { return }
@@ -386,6 +404,21 @@ final class DesktopStore: ObservableObject {
     UserDefaults.standard.set(Array(pinnedProjects), forKey: pinnedProjectsKey)
     UserDefaults.standard.set(Array(archivedProjects), forKey: archivedProjectsKey)
   }
+  private func loadSessionFlags() {
+    let values = UserDefaults.standard.array(forKey: archivedSessionsKey) as? [String] ?? []
+    archivedSessions = Set(values.compactMap(UUID.init(uuidString:)))
+  }
+  private func saveSessionFlags() {
+    UserDefaults.standard.set(archivedSessions.map(\.uuidString), forKey: archivedSessionsKey)
+  }
+  private func cleanupEmptyPlaceholderSessions() {
+    let removed = sessions.filter { $0.workspace.isEmpty && $0.messages.isEmpty && $0.title == "新对话" }.map(\.id)
+    guard !removed.isEmpty else { return }
+    sessions.removeAll { removed.contains($0.id) }
+    archivedSessions.subtract(removed)
+    if let selectedID, removed.contains(selectedID) { self.selectedID = sessions.first?.id }
+    activity.insert("已清理 \(removed.count) 个空白占位会话", at: 0)
+  }
   private func load() {
     if let data = try? Data(contentsOf: persistenceURL), let stored = try? JSONDecoder().decode(DesktopPersistence.self, from: data) { sessions = stored.sessions; selectedID = stored.selectedID; return }
     if let data = UserDefaults.standard.data(forKey: legacyPersistenceKey), let stored = try? JSONDecoder().decode([SessionModel].self, from: data) { sessions = stored }
@@ -523,17 +556,13 @@ private struct ProjectSection: View {
           Button { store.select(session) } label: {
             HStack(spacing: 7) {
               Circle().strokeBorder(store.selectedID == session.id ? Color.brandBlue : Color.muted.opacity(0.55), lineWidth: 1).frame(width: 7, height: 7)
-              Text(session.title).lineLimit(1).font(.system(size: 13, weight: store.selectedID == session.id ? .semibold : .regular)).foregroundStyle(Color.ink)
+              Text(session.title).lineLimit(1).font(.system(size: 13, weight: store.selectedID == session.id ? .semibold : .regular)).foregroundStyle(store.isSessionArchived(session) ? Color.muted : Color.ink)
+              if store.isSessionArchived(session) { Image(systemName: "archivebox").font(.caption2).foregroundStyle(Color.muted) }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7).padding(.horizontal, 10).background(store.selectedID == session.id ? Color.brandBlue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
           }.buttonStyle(.plain)
           Menu {
             Button("重命名会话") { store.openRenameSession(session) }
-            if !session.workspace.isEmpty {
-              Button("重命名项目") { store.openRenameWorkspace(session) }
-              Button("在 Finder 中显示") {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.workspace)])
-              }
-            }
+            Button(store.isSessionArchived(session) ? "取消归档会话" : "归档会话") { store.toggleArchivedSession(session) }
           } label: {
             Image(systemName: "ellipsis").frame(width: 18, height: 26)
           }
