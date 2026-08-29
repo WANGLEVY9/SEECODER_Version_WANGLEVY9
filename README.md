@@ -180,6 +180,8 @@ uv run seecoder chat \
 ./desktop/run_desktop_native.sh
 ```
 
+脚本会先构建临时 `.app` 包，再以前台方式启动包内可执行文件。这样启动错误会直接显示在当前终端，`Ctrl-C` 也只会停止本次开发实例；脚本同时设置 `SEECODER_PROJECT_ROOT`，保证 Git、AgentRunner 和会话状态都以仓库根目录为基准。若此前通过旧脚本启动过实例，请先关闭旧窗口，再重新执行该命令。
+
 桌面端通过本地 `Process` 连接一个持续运行的 `seecoder chat`，因此同一会话可以连续提交多轮任务。当前界面提供：
 
 - 会话列表、会话重命名、工作区选择和新建工作区。

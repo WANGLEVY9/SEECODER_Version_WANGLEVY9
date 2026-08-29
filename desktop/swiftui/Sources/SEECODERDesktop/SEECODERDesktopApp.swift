@@ -220,7 +220,7 @@ final class DesktopStore: ObservableObject {
   private func recordCLIError(_ text: String) { let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines); guard !cleaned.isEmpty else { return }; activity.insert("CLI: " + cleaned, at: 0); addTimeline("本地进程提示", detail: cleaned, tone: .info) }
   private func appendStreaming(_ text: String) { guard let index = currentIndex else { return }; if sessions[index].messages.last?.role == .agent { sessions[index].messages[sessions[index].messages.count - 1] = ChatMessage(.agent, sessions[index].messages.last!.content + text) } else { sessions[index].messages.append(ChatMessage(.agent, text)) } }
   private func append(_ role: ChatMessage.Role, _ text: String) { guard let index = currentIndex else { return }; sessions[index].messages.append(ChatMessage(role, text)); save() }
-  private func run(_ executable: String, _ arguments: [String]) -> String { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = [executable] + arguments; let pipe = Pipe(); do { try p.run(); p.waitUntilExit(); return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) } catch { return "" } }
+  private func run(_ executable: String, _ arguments: [String]) -> String { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = [executable] + arguments; let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe(); do { try p.run(); p.waitUntilExit(); return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) } catch { return "" } }
   private func agentInvocation(root: URL, workspace: String, storage: String) -> (executable: URL, arguments: [String])? {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     let configured = ProcessInfo.processInfo.environment["SEECODER_UV"]
@@ -281,10 +281,14 @@ struct DesktopRoot: View {
   @EnvironmentObject var store: DesktopStore
   var body: some View {
     HSplitView {
-      Sidebar().frame(minWidth: 208, idealWidth: 238, maxWidth: 292, maxHeight: .infinity)
-      Conversation().frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
-      Inspector().frame(minWidth: 250, idealWidth: 284, maxWidth: 390, maxHeight: .infinity)
+      // HSplitView owns the horizontal proposal. Avoid passing an unbounded
+      // proposal back into the split children, which creates a recursive
+      // sizeThatFits graph on recent macOS releases.
+      Sidebar().frame(minWidth: 208, idealWidth: 238, maxWidth: 292)
+      Conversation().frame(minWidth: 440, idealWidth: 720)
+      Inspector().frame(minWidth: 250, idealWidth: 284, maxWidth: 390)
     }
+    .frame(minWidth: 1000, minHeight: 640)
     .background(Color.canvas)
     .environment(\.colorScheme, .light)
     .preferredColorScheme(.light)
@@ -295,16 +299,31 @@ struct DesktopRoot: View {
 }
 
 struct BrandMark: View {
+  private let logo: NSImage?
+
+  init() {
+    if let url = Bundle.module.url(forResource: "seecoder-logo", withExtension: "png") {
+      logo = NSImage(contentsOf: url)
+    } else {
+      logo = nil
+    }
+  }
+
   var body: some View {
     ZStack(alignment: .top) {
       RoundedRectangle(cornerRadius: 9)
         .fill(Color.white.opacity(0.78))
-      Image("seecoder-logo", bundle: .module)
-        .resizable()
-        .scaledToFill()
-        .frame(width: 34, height: 27, alignment: .top)
-        .clipped()
-        .padding(3)
+      if let logo {
+        Image(nsImage: logo)
+          .resizable()
+          .renderingMode(.original)
+          .scaledToFit()
+          .frame(width: 29, height: 29)
+          .padding(2)
+      } else {
+        Image(systemName: "chevron.left.forwardslash.chevron.right")
+          .foregroundStyle(Color.brandBlue)
+      }
     }
     .frame(width: 34, height: 34)
     .clipShape(RoundedRectangle(cornerRadius: 9))
@@ -320,7 +339,7 @@ struct Sidebar: View {
 
 struct Conversation: View {
   @EnvironmentObject var store: DesktopStore
-  var body: some View { VStack(spacing: 0) { HStack { VStack(alignment: .leading, spacing: 3) { Text(store.current?.title ?? "新对话").font(.headline).foregroundStyle(Color.ink); Text(store.current?.workspace.isEmpty == false ? store.current!.workspace : "尚未选择本地开发区域").font(.caption).foregroundStyle(Color.muted).lineLimit(1) }; Spacer(); Menu { Button("选择其他工作区", action: store.chooseWorkspace); Button("重命名当前工作区", action: store.openRenameCurrentWorkspace).disabled(!store.hasWorkspace || store.isRunning) } label: { Label("工作区", systemImage: "folder") }.menuStyle(.borderlessButton); Button("选择工作区", action: store.chooseWorkspace).buttonStyle(.bordered) }.padding(.horizontal, 22).frame(height: 60); Divider(); ScrollViewReader { proxy in ScrollView { Group { if store.current?.messages.isEmpty != false { Onboarding() } else { LazyVStack(alignment: .leading, spacing: 18) { ForEach(store.current?.messages ?? []) { message in MessageBubble(message: message) }; if store.pendingApproval != nil { ApprovalCard() }; if !store.timeline.isEmpty { ExecutionTimeline(compact: false) }; ChangeSummary() } } }.frame(maxWidth: 720, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity, alignment: .center) }.onChange(of: store.timeline.count) { _, _ in proxy.scrollTo("execution-timeline", anchor: .bottom) }.onChange(of: store.pendingApproval?.id) { _, id in if id != nil { proxy.scrollTo("approval-card", anchor: .bottom) } }.onChange(of: store.current?.messages.count) { _, _ in if let id = store.current?.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } } }; Composer() }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.canvas) }
+  var body: some View { VStack(spacing: 0) { HStack { VStack(alignment: .leading, spacing: 3) { Text(store.current?.title ?? "新对话").font(.headline).foregroundStyle(Color.ink); Text(store.current?.workspace.isEmpty == false ? store.current!.workspace : "尚未选择本地开发区域").font(.caption).foregroundStyle(Color.muted).lineLimit(1) }; Spacer(); Menu { Button("选择其他工作区", action: store.chooseWorkspace); Button("重命名当前工作区", action: store.openRenameCurrentWorkspace).disabled(!store.hasWorkspace || store.isRunning) } label: { Label("工作区", systemImage: "folder") }.menuStyle(.borderlessButton); Button("选择工作区", action: store.chooseWorkspace).buttonStyle(.bordered) }.padding(.horizontal, 22).frame(height: 60); Divider(); ScrollViewReader { proxy in ScrollView { Group { if store.current?.messages.isEmpty != false { Onboarding() } else { LazyVStack(alignment: .leading, spacing: 18) { ForEach(store.current?.messages ?? []) { message in MessageBubble(message: message) }; if store.pendingApproval != nil { ApprovalCard() }; if !store.timeline.isEmpty { ExecutionTimeline(compact: false) }; ChangeSummary() } } }.frame(maxWidth: 720, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity, alignment: .center) }.onChange(of: store.timeline.count) { _, _ in proxy.scrollTo("execution-timeline", anchor: .bottom) }.onChange(of: store.pendingApproval?.id) { _, id in if id != nil { proxy.scrollTo("approval-card", anchor: .bottom) } }.onChange(of: store.current?.messages.count) { _, _ in if let id = store.current?.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } } }; Composer() }.background(Color.canvas) }
 }
 
 struct Onboarding: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(spacing: 12) { Spacer(minLength: 48); Image("seecoder-logo", bundle: .module).resizable().frame(width: 50, height: 50).clipShape(RoundedRectangle(cornerRadius: 15)); Text("选择一个开发区域").font(.system(size: 27, weight: .bold)).foregroundStyle(Color.ink); Text("选择已有本地文件夹，或创建一个新的会话工作区。\n所有本地操作都会限制在你选定的目录中。").font(.system(size: 14)).multilineTextAlignment(.center).foregroundStyle(Color.muted); HStack { Button("选择本地文件夹", action: store.chooseWorkspace).buttonStyle(.borderedProminent); Button("新建会话工作区", action: store.openCreateWorkspace).buttonStyle(.bordered) }; Spacer(minLength: 28) }.frame(maxWidth: .infinity, minHeight: 260) } }
@@ -517,7 +536,7 @@ struct Inspector: View {
             }
         }
         .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(alignment: .topLeading)
         .background(Color.inspector)
     }
 }

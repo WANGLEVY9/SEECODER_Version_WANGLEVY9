@@ -2,6 +2,7 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 cd "$script_dir/swiftui"
 # A SwiftPM executable has no bundle identifier, so macOS will not enforce a
 # single-instance policy for us. Close stale development instances first so
@@ -24,5 +25,18 @@ rm -rf "$bundle_dir"
 mkdir -p "$bundle_dir/Contents/MacOS" "$bundle_dir/Contents/Resources"
 cp "$build_dir/SEECODERDesktop" "$bundle_dir/Contents/MacOS/SEECODERDesktop"
 cp -R "$build_dir/SEECODERDesktop_SEECODERDesktop.bundle" "$bundle_dir/Contents/Resources/"
+# Bundle.module looks beside Bundle.main on SwiftPM executables. Keep a copy
+# at the app root as well as Contents/Resources so packaged and development
+# launches resolve the same logo and other resources.
+cp -R "$build_dir/SEECODERDesktop_SEECODERDesktop.bundle" "$bundle_dir/"
 cp "$script_dir/swiftui/Resources/Info.plist" "$bundle_dir/Contents/Info.plist"
-open -n "$bundle_dir"
+chmod +x "$bundle_dir/Contents/MacOS/SEECODERDesktop"
+
+# Launch the bundle executable in the foreground. `open -n` returns
+# immediately and can hide a runtime layout failure behind a successful
+# LaunchServices exit code. Foreground execution keeps stderr visible and
+# lets Ctrl-C stop the exact development instance. The project root is
+# explicit so Git and the local AgentRunner never resolve relative to
+# `.build` or `Contents/MacOS`.
+export SEECODER_PROJECT_ROOT="$project_root"
+exec "$bundle_dir/Contents/MacOS/SEECODERDesktop"
