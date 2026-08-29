@@ -30,7 +30,7 @@ struct SEECODERDesktopApp: App {
       .windowStyle(.hiddenTitleBar)
       .defaultSize(width: 1360, height: 860)
       .windowResizability(.contentMinSize)
-      .commands { CommandGroup(after: .newItem) { Button("新对话") { store.newSession() }.keyboardShortcut("n", modifiers: .command) } }
+      .commands { CommandGroup(after: .newItem) { Button("新对话") { store.openNewConversation() }.keyboardShortcut("n", modifiers: .command) } }
   }
 }
 
@@ -49,6 +49,14 @@ struct SessionModel: Identifiable, Codable, Hashable {
 struct DesktopPersistence: Codable {
   let sessions: [SessionModel]
   let selectedID: UUID?
+}
+
+struct ProjectGroup: Identifiable {
+  let id: String
+  let name: String
+  let workspace: String
+  let sessions: [SessionModel]
+  var isUnassigned: Bool { workspace.isEmpty }
 }
 
 struct DiffLine: Identifiable, Hashable { let id = UUID(); let kind: Kind; let text: String; enum Kind { case meta, file, hunk, add, remove, context } }
@@ -80,6 +88,7 @@ final class DesktopStore: ObservableObject {
   @Published var pendingApproval: PendingApproval?
   @Published var reviewFile: String?
   @Published var diffLines: [DiffLine] = []
+  @Published var showNewConversation = false
   @Published var showCreateWorkspace = false
   @Published var workspaceParent = ""
   @Published var workspaceName = ""
@@ -92,16 +101,50 @@ final class DesktopStore: ObservableObject {
   private var outputBuffer = ""
   private let legacyPersistenceKey = "seecoder.swiftui.sessions.v1"
 
-  init() { load(); if sessions.isEmpty { newSession() }; if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }; save() }
+  init() { load(); if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }; save() }
   var currentIndex: Int? { sessions.firstIndex { $0.id == selectedID } }
   var current: SessionModel? { currentIndex.map { sessions[$0] } }
   var hasWorkspace: Bool { !(current?.workspace ?? "").isEmpty }
+  var projectGroups: [ProjectGroup] {
+    let grouped = Dictionary(grouping: sessions) { $0.workspace }
+    return grouped.keys.sorted { lhs, rhs in
+      if lhs.isEmpty != rhs.isEmpty { return !lhs.isEmpty }
+      return (lhs.isEmpty ? "未选择项目" : shortPath(lhs)).localizedStandardCompare(lhs.isEmpty ? "未选择项目" : shortPath(rhs)) == .orderedAscending
+    }.compactMap { workspace in
+      guard let groupedSessions = grouped[workspace] else { return nil }
+      let name = workspace.isEmpty ? "未选择项目" : shortPath(workspace)
+      return ProjectGroup(id: workspace.isEmpty ? "unassigned" : workspace, name: name, workspace: workspace, sessions: groupedSessions.sorted { $0.updatedAt > $1.updatedAt })
+    }
+  }
 
-  func newSession() { sessions.insert(SessionModel(), at: 0); selectedID = sessions[0].id; reviewFile = nil; diffLines = []; save() }
+  func newSession() { openNewConversation() }
+  func openNewConversation() { guard !isRunning else { return }; showNewConversation = true }
+  func startSession(in workspace: String) {
+    let session = SessionModel(workspace: workspace)
+    sessions.insert(session, at: 0); selectedID = session.id; showNewConversation = false; reviewFile = nil; diffLines = []; activity.insert("已在项目中创建新对话 · \(shortPath(workspace))", at: 0); save()
+  }
   func select(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; reviewFile = nil; diffLines = []; save() }
   func chooseWorkspace() {
     let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "选择开发区域"
-    if panel.runModal() == .OK, let url = panel.url { applyWorkspace(url.path, activityText: "已选择本地工作区") }
+    if panel.runModal() == .OK, let url = panel.url {
+      if currentIndex == nil { startSession(in: url.path) } else { applyWorkspace(url.path, activityText: "已选择本地工作区") }
+    }
+  }
+  func openProject() {
+    let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "打开项目"
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    if let session = sessions.first(where: { URL(fileURLWithPath: $0.workspace).standardizedFileURL.path == url.standardizedFileURL.path }) { select(session) }
+    else { startSession(in: url.path) }
+  }
+  func chooseWorkspaceForNewConversation() {
+    let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "选择项目文件夹"
+    if panel.runModal() == .OK, let url = panel.url { startSession(in: url.path) }
+  }
+  func openNewProject() {
+    showNewConversation = false
+    // Wait for the first sheet to dismiss before presenting the project sheet.
+    // This avoids a transient "already presenting" warning on macOS.
+    DispatchQueue.main.async { self.openCreateWorkspace() }
   }
   func chooseWorkspaceParent() {
     let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "选择父目录"
@@ -111,11 +154,11 @@ final class DesktopStore: ObservableObject {
     let name = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !workspaceParent.isEmpty, !name.isEmpty, name.count <= 80, !name.contains("/"), !name.contains("\\"), name != ".", name != ".." else { workspaceError = "请选择父目录，并输入有效的单层文件夹名称。"; return }
     let target = URL(fileURLWithPath: workspaceParent).appendingPathComponent(name)
-    do { try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false); showCreateWorkspace = false; applyWorkspace(target.path, activityText: "已创建本地工作区") }
+    do { try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false); showCreateWorkspace = false; startSession(in: target.path); activity.insert("已创建新项目 · \(name)", at: 0) }
     catch { workspaceError = "无法创建该文件夹。请确认名称未被占用且目录可写。" }
   }
   func applyWorkspace(_ path: String, activityText: String) { guard let index = currentIndex else { return }; sessions[index].workspace = path; sessions[index].updatedAt = .now; activity.insert(activityText + " · " + shortPath(path), at: 0); reviewFile = nil; diffLines = []; save() }
-  func openCreateWorkspace() { workspaceParent = ""; workspaceName = ""; workspaceError = ""; showCreateWorkspace = true }
+  func openCreateWorkspace() { workspaceParent = ""; workspaceName = "新项目"; workspaceError = ""; showCreateWorkspace = true }
   func openRenameSession(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; renameText = session.title; renameError = ""; renameKind = .session }
   func openRenameCurrentWorkspace() { guard let session = current else { return }; openRenameWorkspace(session) }
   func openRenameWorkspace(_ session: SessionModel) { guard !isRunning, !session.workspace.isEmpty else { return }; selectedID = session.id; renameText = URL(fileURLWithPath: session.workspace).lastPathComponent; renameError = ""; renameKind = .workspace }
@@ -314,6 +357,7 @@ struct DesktopRoot: View {
     .environment(\.colorScheme, .light)
     .preferredColorScheme(.light)
     .tint(Color.brandBlue)
+    .sheet(isPresented: $store.showNewConversation) { NewConversationSheet() }
     .sheet(isPresented: $store.showCreateWorkspace) { CreateWorkspaceSheet() }
     .sheet(item: $store.renameKind) { kind in RenameSheet(kind: kind) }
   }
@@ -355,7 +399,55 @@ struct BrandMark: View {
 
 struct Sidebar: View {
   @EnvironmentObject var store: DesktopStore
-  var body: some View { VStack(alignment: .leading, spacing: 10) { HStack { BrandMark(); Spacer() }.padding(.bottom, 12); Button(action: store.newSession) { Label("新对话", systemImage: "square.and.pencil") }.buttonStyle(SidebarAction()); Button(action: store.chooseWorkspace) { Label("打开工作区", systemImage: "folder") }.buttonStyle(SidebarAction()); Button(action: store.openCreateWorkspace) { Label("新建工作区", systemImage: "folder.badge.plus") }.buttonStyle(SidebarAction()); Text("项目会话").font(.caption.weight(.semibold)).foregroundStyle(Color.muted).padding(.top, 16); ScrollView { LazyVStack(spacing: 3) { ForEach(store.sessions) { session in HStack(spacing: 4) { Button { store.select(session) } label: { VStack(alignment: .leading, spacing: 3) { Text(session.title).lineLimit(1).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.ink); Text(session.workspace.isEmpty ? "未选择工作区" : URL(fileURLWithPath: session.workspace).lastPathComponent).lineLimit(1).font(.caption).foregroundStyle(Color.muted) }.frame(maxWidth: .infinity, alignment: .leading).padding(8).background(store.selectedID == session.id ? Color.brandBlue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain); Menu { Button("重命名会话") { store.openRenameSession(session) }; if !session.workspace.isEmpty { Button("重命名工作区") { store.openRenameWorkspace(session) } } } label: { Image(systemName: "ellipsis").frame(width: 20, height: 28) }.menuStyle(.borderlessButton) } } } }; Spacer(minLength: 12); Divider(); Label("本地优先", systemImage: "checkmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(Color.brandGreen); Text("会话仅保存在此设备\n不会保存 API key").font(.caption2).foregroundStyle(Color.muted) }.padding(16).background(Color.sidebar) }
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack { BrandMark(); Spacer(); Button { store.openNewConversation() } label: { Image(systemName: "plus") }.buttonStyle(.plain).foregroundStyle(Color.muted) }.padding(.bottom, 12)
+      Button(action: store.openNewConversation) { Label("新对话", systemImage: "square.and.pencil") }.buttonStyle(SidebarAction())
+      Button(action: store.openProject) { Label("打开项目", systemImage: "folder") }.buttonStyle(SidebarAction())
+      Button(action: store.openCreateWorkspace) { Label("新建项目", systemImage: "folder.badge.plus") }.buttonStyle(SidebarAction())
+      HStack { Text("项目").font(.caption.weight(.semibold)).foregroundStyle(Color.muted); Spacer(); Button { store.openCreateWorkspace() } label: { Image(systemName: "plus") }.buttonStyle(.plain).foregroundStyle(Color.muted) }.padding(.top, 16)
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 6) {
+          ForEach(store.projectGroups) { project in
+            ProjectSection(project: project)
+          }
+        }
+      }
+      Spacer(minLength: 12)
+      Divider()
+      Label("本地优先", systemImage: "checkmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(Color.brandGreen)
+      Text("项目、会话和消息仅保存在此设备\n不会保存 API key").font(.caption2).foregroundStyle(Color.muted)
+    }.padding(16).background(Color.sidebar)
+  }
+}
+
+private struct ProjectSection: View {
+  @EnvironmentObject var store: DesktopStore
+  let project: ProjectGroup
+  var body: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      HStack(spacing: 7) {
+        Image(systemName: project.isUnassigned ? "tray" : "folder").foregroundStyle(Color.muted)
+        Text(project.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.ink).lineLimit(1)
+        Spacer()
+        if !project.isUnassigned {
+          Button { store.startSession(in: project.workspace) } label: { Image(systemName: "plus") }.buttonStyle(.plain).foregroundStyle(Color.muted)
+          Menu { Button("新对话") { store.startSession(in: project.workspace) }; Button("重命名项目") { if let session = project.sessions.first { store.openRenameWorkspace(session) } } } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).foregroundStyle(Color.muted)
+        }
+      }.padding(.horizontal, 7).padding(.vertical, 5)
+      ForEach(project.sessions) { session in
+        HStack(spacing: 3) {
+          Button { store.select(session) } label: {
+            HStack(spacing: 7) {
+              Circle().strokeBorder(store.selectedID == session.id ? Color.brandBlue : Color.muted.opacity(0.55), lineWidth: 1).frame(width: 7, height: 7)
+              Text(session.title).lineLimit(1).font(.system(size: 13, weight: store.selectedID == session.id ? .semibold : .regular)).foregroundStyle(Color.ink)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7).padding(.horizontal, 10).background(store.selectedID == session.id ? Color.brandBlue.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
+          }.buttonStyle(.plain)
+          Menu { Button("重命名会话") { store.openRenameSession(session) }; if !session.workspace.isEmpty { Button("重命名项目") { store.openRenameWorkspace(session) } } } label: { Image(systemName: "ellipsis").frame(width: 18, height: 26) }.menuStyle(.borderlessButton).foregroundStyle(Color.muted)
+        }.padding(.leading, 10)
+      }
+    }
+  }
 }
 
 struct Conversation: View {
@@ -363,7 +455,7 @@ struct Conversation: View {
   var body: some View { VStack(spacing: 0) { HStack { VStack(alignment: .leading, spacing: 3) { Text(store.current?.title ?? "新对话").font(.headline).foregroundStyle(Color.ink); Text(store.current?.workspace.isEmpty == false ? store.current!.workspace : "尚未选择本地开发区域").font(.caption).foregroundStyle(Color.muted).lineLimit(1) }; Spacer(); Menu { Button("选择其他工作区", action: store.chooseWorkspace); Button("重命名当前工作区", action: store.openRenameCurrentWorkspace).disabled(!store.hasWorkspace || store.isRunning) } label: { Label("工作区", systemImage: "folder") }.menuStyle(.borderlessButton); Button("选择工作区", action: store.chooseWorkspace).buttonStyle(.bordered) }.padding(.horizontal, 22).frame(height: 60); Divider(); ScrollViewReader { proxy in ScrollView { Group { if store.current?.messages.isEmpty != false { Onboarding() } else { LazyVStack(alignment: .leading, spacing: 18) { ForEach(store.current?.messages ?? []) { message in MessageBubble(message: message) }; if store.pendingApproval != nil { ApprovalCard() }; if !store.timeline.isEmpty { ExecutionTimeline(compact: false) }; ChangeSummary() } } }.frame(maxWidth: 720, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity, alignment: .center) }.onChange(of: store.timeline.count) { _, _ in proxy.scrollTo("execution-timeline", anchor: .bottom) }.onChange(of: store.pendingApproval?.id) { _, id in if id != nil { proxy.scrollTo("approval-card", anchor: .bottom) } }.onChange(of: store.current?.messages.count) { _, _ in if let id = store.current?.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } } }; Composer() }.background(Color.canvas) }
 }
 
-struct Onboarding: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(spacing: 12) { Spacer(minLength: 48); Image("seecoder-logo", bundle: .module).resizable().frame(width: 50, height: 50).clipShape(RoundedRectangle(cornerRadius: 15)); Text("选择一个开发区域").font(.system(size: 27, weight: .bold)).foregroundStyle(Color.ink); Text("选择已有本地文件夹，或创建一个新的会话工作区。\n所有本地操作都会限制在你选定的目录中。").font(.system(size: 14)).multilineTextAlignment(.center).foregroundStyle(Color.muted); HStack { Button("选择本地文件夹", action: store.chooseWorkspace).buttonStyle(.borderedProminent); Button("新建会话工作区", action: store.openCreateWorkspace).buttonStyle(.bordered) }; Spacer(minLength: 28) }.frame(maxWidth: .infinity, minHeight: 260) } }
+struct Onboarding: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(spacing: 12) { Spacer(minLength: 48); Image("seecoder-logo", bundle: .module).resizable().frame(width: 50, height: 50).clipShape(RoundedRectangle(cornerRadius: 15)); Text("开始一个新项目").font(.system(size: 27, weight: .bold)).foregroundStyle(Color.ink); Text("选择一个本地文件夹作为项目，或创建名为“新项目”的文件夹。\n项目下可以继续创建多个独立会话。").font(.system(size: 14)).multilineTextAlignment(.center).foregroundStyle(Color.muted); HStack { Button("选择本地项目", action: store.chooseWorkspace).buttonStyle(.borderedProminent); Button("新建项目", action: store.openCreateWorkspace).buttonStyle(.bordered) }; Spacer(minLength: 28) }.frame(maxWidth: .infinity, minHeight: 260) } }
 struct MessageBubble: View { let message: ChatMessage; var body: some View { VStack(alignment: .leading, spacing: 7) { Label(message.role == .user ? "你" : message.role == .agent ? "SEECODER" : "本地状态", systemImage: message.role == .user ? "person.fill" : "sparkle").font(.caption.weight(.semibold)).foregroundStyle(message.role == .user ? Color.brandBlue : Color.brandGreen); Group { if message.role == .agent { MarkdownMessage(source: message.content) } else { Text(message.content).textSelection(.enabled).font(.system(size: 14)).lineSpacing(5).foregroundStyle(Color.ink) } }.padding(15).frame(maxWidth: 760, alignment: .leading).background(message.role == .user ? Color.brandCyan.opacity(0.14) : Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) }.id(message.id) } }
 struct MarkdownMessage: View {
   private enum Block { case prose([String]), code(language: String, body: String) }
@@ -675,6 +767,29 @@ private struct ManagementRow: View {
     }
 }
   private func diffColor(_ kind: DiffLine.Kind) -> Color { switch kind { case .add: .green.opacity(0.12); case .remove: .red.opacity(0.10); case .file, .hunk: .blue.opacity(0.09); default: .clear } }
+struct NewConversationSheet: View {
+  @EnvironmentObject var store: DesktopStore
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      HStack(spacing: 10) { Image(systemName: "square.and.pencil").foregroundStyle(Color.brandBlue); Text("新对话").font(.title2.bold()).foregroundStyle(Color.ink) }
+      Text("先选择一个本地项目文件夹。新对话会归入该项目，项目下可以继续创建多个会话。")
+        .font(.subheadline).foregroundStyle(Color.muted).lineSpacing(3)
+      VStack(alignment: .leading, spacing: 8) {
+        Button { store.chooseWorkspaceForNewConversation() } label: {
+          Label("选择已有项目文件夹", systemImage: "folder").frame(maxWidth: .infinity, alignment: .leading)
+        }.buttonStyle(.borderedProminent)
+        Button(action: store.openNewProject) {
+          Label("新建项目（默认名称：新项目）", systemImage: "folder.badge.plus").frame(maxWidth: .infinity, alignment: .leading)
+        }.buttonStyle(.bordered)
+      }
+      HStack { Spacer(); Button("取消") { store.showNewConversation = false } }
+    }
+    .padding(26)
+    .frame(width: 480)
+  }
+}
+
 struct CreateWorkspaceSheet: View {
   @EnvironmentObject var store: DesktopStore
   @FocusState private var nameFieldFocused: Bool
