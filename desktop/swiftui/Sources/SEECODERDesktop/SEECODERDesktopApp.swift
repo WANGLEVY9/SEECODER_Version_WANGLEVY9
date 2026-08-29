@@ -140,7 +140,11 @@ final class DesktopStore: ObservableObject {
       catch { self.process = nil; self.inputPipe = nil }
     }
     let sessionID = sessions[index].id.uuidString; let workspace = sessions[index].workspace; let storage = sessionStorageURL(id: sessionID).path
-    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.currentDirectoryURL = projectRootURL(); p.arguments = ["uv", "run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage, "--mode", mode]
+    let root = projectRootURL()
+    let envFile = root.appendingPathComponent(".env")
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.currentDirectoryURL = root
+    p.arguments = ["uv", "run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage, "--mode", mode]
+    if FileManager.default.fileExists(atPath: envFile.path) { p.arguments = (p.arguments ?? []) + ["--env-file", envFile.path] }
     let input = Pipe(); let output = Pipe(); let error = Pipe(); p.standardInput = input; p.standardOutput = output; p.standardError = error; process = p; inputPipe = input; outputBuffer = ""
     output.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.consume(String(decoding: data, as: UTF8.self)) } }
     error.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.recordCLIError(String(decoding: data, as: UTF8.self)) } }
