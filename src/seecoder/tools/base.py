@@ -27,6 +27,19 @@ class WorkspaceBoundary:
             raise ValueError(f"Workspace is not an existing directory: {root}")
         self.root = resolved
 
+    def update_root(self, root: Path) -> None:
+        """Move the active boundary to a newly renamed workspace root.
+
+        All built-in tools share one boundary instance. Updating it after a
+        root rename keeps subsequent reads, writes, commands, and Git calls
+        scoped to the new path for the remainder of the conversation.
+        """
+
+        resolved = root.expanduser().resolve()
+        if not resolved.is_dir():
+            raise ValueError(f"Workspace is not an existing directory: {root}")
+        self.root = resolved
+
     def resolve(self, raw_path: str) -> Path:
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise ValueError("path must be a non-empty string")

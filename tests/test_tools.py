@@ -74,13 +74,20 @@ class LocalToolsTests(unittest.TestCase):
         self.assertEqual(result.data["new_path"], "src/core")
         self.assertTrue((self.root / "src" / "core" / "module.py").is_file())
 
-    def test_rename_directory_refuses_workspace_root_and_protected_folders(self) -> None:
+    def test_rename_directory_moves_workspace_root_and_updates_boundary(self) -> None:
+        old_root = self.boundary.root
         root_result = RenameDirectoryTool(self.boundary).execute({"path": ".", "new_name": "renamed"})
+        self.assertTrue(root_result.ok)
+        self.assertEqual(root_result.data["old_path"], str(old_root))
+        renamed = old_root.parent / "renamed"
+        self.assertEqual(root_result.data["new_path"], str(renamed))
+        self.assertEqual(self.boundary.root, renamed.resolve())
+        self.assertTrue((renamed / "src" / "sample.txt").is_file())
+
+    def test_rename_directory_refuses_protected_folders(self) -> None:
         protected = self.root / ".git"
         protected.mkdir()
         protected_result = RenameDirectoryTool(self.boundary).execute({"path": ".git", "new_name": "old-git"})
-        self.assertFalse(root_result.ok)
-        self.assertEqual(root_result.error.kind, "WorkspaceRoot")
         self.assertFalse(protected_result.ok)
         self.assertEqual(protected_result.error.kind, "ProtectedPath")
 

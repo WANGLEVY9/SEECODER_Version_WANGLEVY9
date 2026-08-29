@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -46,8 +47,8 @@ class AgentRunnerTests(unittest.TestCase):
         values.update(overrides)
         return Settings(**values)
 
-    def test_system_prompt_reserves_workspace_root_rename_for_desktop(self) -> None:
-        self.assertIn("desktop application owns selecting, creating, and renaming the workspace root", DEFAULT_SYSTEM_PROMPT.lower())
+    def test_system_prompt_exposes_safe_workspace_root_rename(self) -> None:
+        self.assertIn("path='.'", DEFAULT_SYSTEM_PROMPT)
         self.assertIn("rename_directory", DEFAULT_SYSTEM_PROMPT)
 
     def test_full_read_write_command_loop(self) -> None:
@@ -97,6 +98,35 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertEqual(result["name"], "read_file")
         self.assertTrue(result["ok"])
         self.assertIn("purpose", result)
+        self.assertIn("data", result)
+
+    def test_agent_can_rename_workspace_root_and_reports_new_path(self) -> None:
+        root = self.workspace / "unnamed"
+        root.mkdir()
+        events: list[tuple[str, dict[str, Any]]] = []
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("rename", "rename_directory", {"path": ".", "new_name": "feature"}),)),
+                ModelResponse("Renamed the workspace root."),
+            ]
+        )
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(), model_client=model, workspace=root,
+            event_sink=lambda event, data: events.append((event, data)),
+        )
+        outcome = runner.run("Rename the current workspace folder to feature.")
+
+        renamed = root.parent / "feature"
+        try:
+            self.assertEqual(outcome.state, RunState.FINAL)
+            self.assertTrue(renamed.is_dir())
+            result = next(data for event, data in events if event == "tool_result")
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["data"]["workspace_renamed"])
+            self.assertEqual(result["data"]["workspace_path"], str(renamed.resolve()))
+            self.assertEqual(runner.workspace_boundary.root, renamed.resolve())
+        finally:
+            shutil.rmtree(renamed, ignore_errors=True)
 
     def test_repeated_tool_errors_stop_the_run(self) -> None:
         model = ScriptedModel(

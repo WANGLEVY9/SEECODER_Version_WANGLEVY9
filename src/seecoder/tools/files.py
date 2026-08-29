@@ -253,12 +253,14 @@ class WriteFileTool:
 
 
 class RenameDirectoryTool:
-    """Rename one non-root workspace directory without invoking a shell."""
+    """Rename a workspace directory, including the selected root, locally."""
 
     name = "rename_directory"
     description = (
-        "Rename an existing non-root directory inside the configured workspace. "
-        "Use this for source folders; it cannot rename the workspace root or protected system folders."
+        "Rename an existing directory without invoking a shell. Use path='.' "
+        "to rename the selected workspace root, or a workspace-relative path "
+        "for a source folder. The target must be a new single directory-name "
+        "component; protected system folders and symbolic links are refused."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -286,8 +288,6 @@ class RenameDirectoryTool:
         if lexical.is_symlink():
             return ToolResult.failure("SymlinkPath", "Refusing to rename a symbolic-link directory")
         source = self.boundary.resolve(raw_path)
-        if source == self.boundary.root:
-            return ToolResult.failure("WorkspaceRoot", "The workspace root is managed by the desktop client and cannot be renamed by the agent")
         if not source.exists():
             return ToolResult.failure("NotFound", f"Directory does not exist: {raw_path}")
         if not source.is_dir():
@@ -295,12 +295,44 @@ class RenameDirectoryTool:
         if any(part in _PROTECTED_DIRECTORY_NAMES for part in source.relative_to(self.boundary.root).parts):
             return ToolResult.failure("ProtectedPath", "Renaming protected project-system directories is not allowed")
 
-        target = self.boundary.resolve(str(source.parent / new_name))
+        # A root rename intentionally moves one level above the boundary. For
+        # non-root folders, resolve the sibling through the normal boundary
+        # check so a malicious name cannot escape the workspace.
+        is_root = source == self.boundary.root
+        target = (source.parent / new_name).resolve(strict=False) if is_root else self.boundary.resolve(str(source.parent / new_name))
+        if is_root:
+            try:
+                target.relative_to(source.parent)
+            except ValueError as error:
+                raise ValueError("workspace root rename target must remain beside the current root") from error
+            if source.parent == source:
+                return ToolResult.failure("ProtectedPath", "Cannot rename the filesystem root")
         if target == source:
-            return ToolResult.success({"old_path": self.boundary.relative(source), "new_path": self.boundary.relative(target), "changed": False})
+            return ToolResult.success(
+                {
+                    "old_path": str(source),
+                    "new_path": str(target),
+                    "workspace_path": str(target),
+                    "workspace_renamed": is_root,
+                    "changed": False,
+                }
+            )
         if target.exists():
-            return ToolResult.failure("AlreadyExists", f"A file or directory already exists at: {self.boundary.relative(target)}")
+            display = str(target) if is_root else self.boundary.relative(target)
+            return ToolResult.failure("AlreadyExists", f"A file or directory already exists at: {display}")
         source.rename(target)
+        if is_root:
+            old_path = str(source)
+            self.boundary.update_root(target)
+            return ToolResult.success(
+                {
+                    "old_path": old_path,
+                    "new_path": str(self.boundary.root),
+                    "workspace_path": str(self.boundary.root),
+                    "workspace_renamed": True,
+                    "changed": True,
+                }
+            )
         return ToolResult.success(
             {"old_path": self.boundary.relative(source.parent / source.name), "new_path": self.boundary.relative(target), "changed": True}
         )

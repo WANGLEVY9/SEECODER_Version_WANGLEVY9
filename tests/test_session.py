@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -91,3 +92,24 @@ class ConversationTests(unittest.TestCase):
         replay.responses.append(ModelResponse("Third answer."))
         outcome = loaded.send("One more")
         self.assertEqual(outcome.state, RunState.FINAL)
+
+    def test_workspace_root_rename_is_persisted_for_resume(self) -> None:
+        root = self.workspace / "unnamed"
+        root.mkdir()
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("rename", "rename_directory", {"path": ".", "new_name": "renamed"}),)),
+                ModelResponse("Workspace renamed."),
+            ]
+        )
+        conversation = Conversation(settings=self.settings, model_client=model, workspace=root)
+        conversation.start("Rename the current workspace to renamed.")
+        renamed = root.parent / "renamed"
+        try:
+            self.assertEqual(conversation.workspace, renamed.resolve())
+            snapshot = self.workspace / "conversation.json"
+            conversation.save(snapshot)
+            data = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(data["workspace"], str(renamed.resolve()))
+        finally:
+            shutil.rmtree(renamed, ignore_errors=True)

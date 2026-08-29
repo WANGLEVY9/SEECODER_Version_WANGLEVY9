@@ -205,6 +205,10 @@ class Conversation:
 
     def _advance(self) -> RunOutcome:
         outcome = self.runner.run_messages(self._messages)
+        # A local root rename updates the shared boundary. Persist that new
+        # path so resume-after-restart does not point at the old directory.
+        if self.runner.workspace_boundary is not None:
+            self.workspace = self.runner.workspace_boundary.root
         if outcome.usage is not None:
             self._total_usage = self._total_usage.plus(outcome.usage)
         self._total_steps += outcome.steps

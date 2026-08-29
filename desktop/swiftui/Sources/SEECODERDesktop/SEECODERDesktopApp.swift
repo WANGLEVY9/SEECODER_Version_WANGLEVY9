@@ -199,6 +199,10 @@ final class DesktopStore: ObservableObject {
       let name = data["name"] as? String ?? "unknown"; let ok = data["ok"] as? Bool ?? false
       let purpose = data["purpose"] as? String ?? "本地工具执行完成"
       addTimeline(ok ? "工具成功：\(name)" : "工具失败：\(name)", detail: ok ? purpose : "\(purpose) · \(data["error"] as? String ?? "未知错误")", tone: ok ? .success : .failure)
+      if ok, name == "rename_directory", let result = data["data"] as? [String: Any], result["workspace_renamed"] as? Bool == true,
+         let oldPath = result["old_path"] as? String, let newPath = result["workspace_path"] as? String {
+        applyAgentWorkspaceRename(oldPath: oldPath, newPath: newPath)
+      }
     case "plan_proposal": addTimeline("已提出计划步骤", detail: data["description"] as? String ?? (data["name"] as? String ?? "本地操作"), tone: .warning)
     case "approval_request":
       let name = data["name"] as? String ?? "本地操作"; let detail = "\(name) 需要用户确认后才会在本地执行"
@@ -220,6 +224,23 @@ final class DesktopStore: ObservableObject {
   private func recordCLIError(_ text: String) { let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines); guard !cleaned.isEmpty else { return }; activity.insert("CLI: " + cleaned, at: 0); addTimeline("本地进程提示", detail: cleaned, tone: .info) }
   private func appendStreaming(_ text: String) { guard let index = currentIndex else { return }; if sessions[index].messages.last?.role == .agent { sessions[index].messages[sessions[index].messages.count - 1] = ChatMessage(.agent, sessions[index].messages.last!.content + text) } else { sessions[index].messages.append(ChatMessage(.agent, text)) } }
   private func append(_ role: ChatMessage.Role, _ text: String) { guard let index = currentIndex else { return }; sessions[index].messages.append(ChatMessage(role, text)); save() }
+  private func applyAgentWorkspaceRename(oldPath: String, newPath: String) {
+    let oldURL = URL(fileURLWithPath: oldPath).standardizedFileURL
+    let newURL = URL(fileURLWithPath: newPath).standardizedFileURL
+    var changed = false
+    for index in sessions.indices {
+      let workspaceURL = URL(fileURLWithPath: sessions[index].workspace).standardizedFileURL
+      if !sessions[index].workspace.isEmpty && workspaceURL.path == oldURL.path {
+        sessions[index].workspace = newURL.path
+        sessions[index].updatedAt = .now
+        changed = true
+      }
+    }
+    guard changed else { return }
+    activity.insert("Agent 已重命名工作区 · \(newURL.lastPathComponent)", at: 0)
+    addTimeline("工作区路径已更新", detail: newURL.path, tone: .success)
+    save()
+  }
   private func run(_ executable: String, _ arguments: [String]) -> String { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = [executable] + arguments; let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe(); do { try p.run(); p.waitUntilExit(); return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) } catch { return "" } }
   private func agentInvocation(root: URL, workspace: String, storage: String) -> (executable: URL, arguments: [String])? {
     let home = FileManager.default.homeDirectoryForCurrentUser.path

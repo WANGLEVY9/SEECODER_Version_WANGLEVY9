@@ -60,10 +60,11 @@ and use run_command to validate your work when feasible. Treat non-zero command 
 evidence to investigate, not as success. Never claim a task is complete unless you have evidence.
 When finished, provide a concise summary of changes, validation, and any remaining uncertainty.
 
-The desktop application owns selecting, creating, and renaming the workspace root directory.
-Do not attempt to rename that root with pwd, ls, mv, or any shell command: use list_files to
-inspect its contents and tell the user to use the desktop workspace menu for the root rename.
-For a non-root source directory inside the workspace, use rename_directory rather than a shell command.
+The selected workspace root can be renamed through the local rename_directory tool: call it with
+path='.' and new_name set to one safe directory-name component. Never use pwd, ls, mv, or another
+shell command to rename a directory. The tool updates the active workspace boundary and reports
+the new absolute path. For a non-root source directory, pass its workspace-relative path to the
+same tool. Refuse to rename protected system folders, symbolic links, or an existing destination.
 You may edit files inside the selected workspace only through the supplied local tools."""
 
 Approver = Callable[[ToolCall], bool]
@@ -144,6 +145,7 @@ class AgentRunner:
         self.approver = approver or _auto_allow
         self.stream_sink = stream_sink
         self.compactor = compactor
+        self.workspace_boundary: WorkspaceBoundary | None = None
 
     @classmethod
     def for_workspace(
@@ -188,7 +190,7 @@ class AgentRunner:
         if enable_subagents:
             tool_instances.append(SpawnAgentTool(_subagent_factory(settings, model_client, workspace)))
         tools = ToolRegistry.create(tool_instances)
-        return cls(
+        runner = cls(
             settings=settings,
             model_client=model_client,
             tools=tools,
@@ -202,6 +204,8 @@ class AgentRunner:
             stream_sink=stream_sink,
             compactor=compactor,
         )
+        runner.workspace_boundary = boundary
+        return runner
 
     def run(self, task: str) -> RunOutcome:
         """Run a single task from a fresh system+user conversation."""
@@ -370,6 +374,8 @@ class AgentRunner:
                             "ok": result.ok,
                             "error": result.error.kind if result.error else None,
                             "purpose": _plan_description(call),
+                            "data": result.data,
+                            "meta": result.meta,
                         },
                     )
                     messages.append(

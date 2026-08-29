@@ -67,7 +67,7 @@ flowchart LR
 | --- | --- | --- |
 | 多轮对话 | `chat` 进程持续保存消息、工具结果、usage 与状态，可保存/恢复 JSON 会话 | 会话文件由用户自行管理，不上传云端 |
 | 工作模式 | `Ask` 请求批准，`Plan` 只读规划，`Auto Mode` 自动执行允许的本地操作 | 高风险命令仍受白名单和策略限制 |
-| 文件协作 | 列目录、读取、搜索、符号发现、写入、补丁、目录重命名、项目概览 | 所有路径必须位于选定工作区，拒绝符号链接逃逸 |
+| 文件协作 | 列目录、读取、搜索、符号发现、写入、补丁、目录重命名、项目概览 | 所有路径必须位于选定工作区，拒绝符号链接逃逸；`rename_directory` 可安全重命名工作区根目录并同步活动边界 |
 | 命令与 Git | 受限 argv 命令、状态、日志、diff、show，以及可选显式 host shell | 默认不拼接 shell，不是操作系统级沙箱 |
 | 模型交互 | 原生 tool-calling、reasoning 内容保留、流式增量、usage 统计、有限重试 | 只适配协议，不托管代码执行 |
 | 上下文与记忆 | 历史裁剪、上下文压缩、`SEECODER.md`/`AGENTS.md` 项目指引、Skills 加载 | 指引不能扩大工具权限 |
@@ -201,6 +201,8 @@ uv run seecoder chat \
 - **验证变更**：`run_command`、`git_diff`、`git_status`、`git_log`、`git_show`。
 - **Agent 辅助**：有界的 `spawn_agent`、可失败降级的 `web_search`。
 - **本地 Skills**：`list_skills` 读取 `.seecoder/skills/<name>/SKILL.md`，仅提供项目指引。
+
+`rename_directory` 不调用 shell：重命名当前选定的工作区根目录时传入 `path="."` 和新的单层名称，AgentRunner 会原子地更新后续工具的本地路径，桌面端也会同步所有引用该目录的会话。目标重名、系统保护目录、符号链接和越界路径都会被拒绝。
 
 新增工具应实现本地 Tool Protocol，声明名称、描述、参数 schema、只读/变更属性和执行函数，再注册到 `ToolRegistry`。工具不能绕过 `WorkspaceBoundary`、审批策略、命令限制或 trace。当前系统不要求外部 MCP 服务才能运行；桌面端的工具/MCP 面板用于展示本地注册能力和连接状态，外部服务必须由用户显式配置并遵守同一权限边界。
 
