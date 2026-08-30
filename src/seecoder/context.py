@@ -62,6 +62,39 @@ def _truncate_content(message: ChatMessage, limit: int) -> ChatMessage:
     )
 
 
+def _fit_message(message: ChatMessage, allowance: int) -> ChatMessage | None:
+    """Return a safely shortened message that fits ``allowance`` exactly.
+
+    Tool-call identifiers and arguments are protocol data, not prose: trimming
+    them would make a later provider request invalid.  If that immutable shape
+    alone does not fit, the caller must drop the whole (old) turn or stop the
+    run rather than quietly violating the configured budget.
+    """
+
+    if estimate_message_chars(message) <= allowance:
+        return message
+    base = replace(message, content="", reasoning_content="")
+    if estimate_message_chars(base) > allowance:
+        return None
+    source = message.content or ""
+    # Reasoning content is retained only in thinking mode, where callers ask
+    # for complete history and never reach this lossy path.  Outside it, prose
+    # content is the useful and safe thing to retain.
+    if not source:
+        return base
+    low, high = 0, len(source)
+    best = base
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = _truncate_content(replace(message, reasoning_content=None), middle)
+        if estimate_message_chars(candidate) <= allowance:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
 class ContextManager:
     """Retain task intent and recent complete turns under a fixed character budget."""
 
@@ -93,14 +126,26 @@ class ContextManager:
         # ceiling or dropping either message.
         pinned_size = sum(estimate_message_chars(item) for item in pinned)
         if pinned_size > self.char_budget:
-            fixed_overhead = sum(estimate_message_chars(replace(item, content="")) for item in pinned)
-            content_budget = max(512, self.char_budget - fixed_overhead)
-            if len(pinned) == 2:
-                system_limit = min(len(pinned[0].content or ""), max(256, content_budget // 3))
-                user_limit = max(256, content_budget - system_limit)
-                pinned = [_truncate_content(pinned[0], system_limit), _truncate_content(pinned[1], user_limit)]
-            else:
-                pinned = [_truncate_content(item, content_budget) for item in pinned]
+            # Allocate the fixed system/task contract first, then shorten only
+            # textual fields.  There is intentionally no ``max(256, ...)``:
+            # that old lower bound was able to exceed the configured budget.
+            compacted_pinned: list[ChatMessage] = []
+            remaining_budget = self.char_budget
+            for index, item in enumerate(pinned):
+                remaining_items = len(pinned) - index
+                fixed_rest = sum(
+                    estimate_message_chars(replace(other, content="", reasoning_content=""))
+                    for other in pinned[index + 1 :]
+                )
+                allowance = max(0, remaining_budget - fixed_rest)
+                fitted = _fit_message(item, allowance)
+                if fitted is None:
+                    raise ContextBudgetExceeded(
+                        "Required system/task message metadata exceeds the context budget."
+                    )
+                compacted_pinned.append(fitted)
+                remaining_budget -= estimate_message_chars(fitted)
+            pinned = compacted_pinned
 
         # Preserve complete recent turns. Keeping tool request and result together
         # maintains the causal structure required by native tool-calling APIs.
@@ -111,12 +156,19 @@ class ContextManager:
             if size <= budget_left:
                 chosen.append(turn)
                 budget_left -= size
-            elif not chosen:
-                # Always preserve some evidence of the most recent turn, even when a
-                # model has emitted unusually large content.
-                compact = [_truncate_content(item, max(256, budget_left // max(1, len(turn)))) for item in turn]
-                chosen.append(compact)
+            elif not chosen and len(turn) == 1:
+                # A plain, oversized most-recent message can be shortened.  A
+                # tool turn is indivisible: trimming tool-call JSON would break
+                # the provider protocol, so omit that old turn instead.
+                compact = _fit_message(turn[0], budget_left)
+                if compact is not None:
+                    chosen.append([compact])
                 break
 
         selected = [message for turn in reversed(chosen) for message in turn]
-        return pinned + selected
+        prepared = pinned + selected
+        if sum(estimate_message_chars(item) for item in prepared) > self.char_budget:
+            # This is a hard postcondition.  Keep the defensive error even
+            # though the allocation above should make it unreachable.
+            raise ContextBudgetExceeded("Context manager could not fit messages within the configured budget.")
+        return prepared

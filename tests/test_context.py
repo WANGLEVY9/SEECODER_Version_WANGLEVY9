@@ -50,3 +50,18 @@ class ContextManagerTests(unittest.TestCase):
         ]
         with self.assertRaises(ContextBudgetExceeded):
             manager.prepare(messages, preserve_complete_history=True)
+
+    def test_oversized_recent_tool_turn_never_exceeds_hard_budget(self) -> None:
+        manager = ContextManager(2_000)
+        call = ToolCall(id="call", name="write_file", arguments='{"path":"x.py","content":"' + "x" * 3_000 + '"}')
+        messages = [
+            ChatMessage(role="system", content="system"),
+            ChatMessage(role="user", content="task"),
+            ChatMessage(role="assistant", content="write this", tool_calls=(call,)),
+            ChatMessage(role="tool", tool_call_id="call", content="result " * 500),
+        ]
+        prepared = manager.prepare(messages)
+        self.assertLessEqual(sum(estimate_message_chars(message) for message in prepared), manager.char_budget)
+        # Keeping a malformed fragment of a tool call would be worse than
+        # omitting an oversized old turn.
+        self.assertFalse(any(message.tool_call_id == "call" for message in prepared))

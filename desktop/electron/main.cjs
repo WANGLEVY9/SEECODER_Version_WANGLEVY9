@@ -232,7 +232,7 @@ ipcMain.handle("seecoder:start-chat", async (_event, payload) => {
   await fs.mkdir(directory, { recursive: true });
   const sessionPath = path.join(directory, sessionId + ".json");
   const hasSavedSession = await fs.access(sessionPath).then(() => true).catch(() => false);
-  const { command, args } = buildChatInvocation(findUv(), payload?.workspace, payload?.mode, sessionPath, hasSavedSession);
+  const { command, args } = buildChatInvocation(findUv(), payload?.workspace, payload?.mode, sessionPath, hasSavedSession, sessionId);
   const child = spawn(command, args, {
     cwd: projectRoot,
     detached: process.platform !== "win32",

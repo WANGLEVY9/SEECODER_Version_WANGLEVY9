@@ -17,6 +17,7 @@ class RunState(StrEnum):
     STOP_MAX_STEPS = "stop_max_steps"
     STOP_TOOL_ERROR_LIMIT = "stop_tool_error_limit"
     STOP_CONTEXT_BUDGET = "stop_context_budget"
+    STOP_TASK_TIMEOUT = "stop_task_timeout"
     FAILED_MODEL = "failed_model"
     FAILED_PROTOCOL = "failed_protocol"
     CANCELLED = "cancelled"
@@ -156,3 +157,10 @@ class RunOutcome:
     plan: tuple[PlanStep, ...] = ()
     usage: Usage | None = None
     mode: Mode = Mode.AUTO
+    # A persisted ASK-mode continuation.  The assistant tool-call message is
+    # already present in history; these calls have not been dispatched yet.
+    pending_calls: tuple[ToolCall, ...] = ()
+    # A broken stream can have rendered useful text before its transport died.
+    # Keep it separate from final_text so clients can present a recoverable UI.
+    partial_text: str | None = None
+    recoverable: bool = False

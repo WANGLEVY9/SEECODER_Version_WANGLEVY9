@@ -42,9 +42,18 @@ def _language_instruction(messages: list[ChatMessage]) -> str:
 
 
 class ModelClientError(RuntimeError):
-    def __init__(self, message: str, *, retryable: bool) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool,
+        partial_text: str | None = None,
+        partial_reasoning: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.partial_text = partial_text
+        self.partial_reasoning = partial_reasoning
 
 
 class ModelClient(Protocol):
@@ -221,7 +230,11 @@ class OpenAICompatibleClient:
         except Exception as error:
             status_code = getattr(error, "status_code", None)
             retryable = status_code is None or status_code == 429 or status_code >= 500
-            raise ModelClientError(f"{type(error).__name__}: {error}", retryable=retryable) from error
+            raise ModelClientError(
+                f"{type(error).__name__}: {error}", retryable=retryable,
+                partial_text="".join(content_parts) or None,
+                partial_reasoning="".join(reasoning_parts) or None,
+            ) from error
 
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -300,15 +313,31 @@ class RetryingModelClient:
         raise last_error
 
     def complete_stream(self, messages: list[ChatMessage], tools: list[dict[str, Any]]):
-        """Forward streaming deltas; the inner client owns the request and assembly.
+        """Retry only streams that failed before emitting a delta.
 
-        Streaming retries are not attempted because a consumed stream cannot be replayed.
+        Replaying a partially rendered response duplicates text/tool deltas and
+        can corrupt a UI transcript, so such failures are surfaced with their
+        partial text for persistence and recovery instead of being retried.
         """
 
         inner = getattr(self.client, "complete_stream", None)
         if callable(inner):
-            yield from inner(messages, tools)
-            return
+            last_error: ModelClientError | None = None
+            for attempt in range(self.retries + 1):
+                emitted = False
+                try:
+                    for event in inner(messages, tools):
+                        emitted = True
+                        yield event
+                    return
+                except ModelClientError as error:
+                    last_error = error
+                    emitted = emitted or bool(error.partial_text or error.partial_reasoning)
+                    if emitted or not error.retryable or attempt == self.retries:
+                        raise
+                    self.sleeper(0.5 * (2**attempt))
+            assert last_error is not None
+            raise last_error
         # Fall back to a non-streaming single event for clients without streaming.
         response = self.complete(messages, tools)
         yield StreamEvent(kind="done", response=response)

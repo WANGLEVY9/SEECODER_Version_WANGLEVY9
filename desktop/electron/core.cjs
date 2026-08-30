@@ -10,13 +10,14 @@ function buildBackendInvocation(uv, task, workspace, mode) {
   return { command: uv, args };
 }
 
-function buildChatInvocation(uv, workspace, mode, sessionPath, resume) {
+function buildChatInvocation(uv, workspace, mode, sessionPath, resume, sessionId) {
   if (typeof uv !== "string" || !uv.trim()) throw new Error("未找到 uv；请安装 uv 或设置 SEECODER_UV。");
   if (typeof workspace !== "string" || !workspace.trim()) throw new Error("请先选择一个已存在的工作区。");
   if (typeof sessionPath !== "string" || !sessionPath.trim()) throw new Error("会话存储路径不能为空。");
   const allowed = { auto: "auto", plan: "plan", ask: "ask" };
   const selected = allowed[mode] || "auto";
   const args = ["run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", sessionPath, "--mode", selected];
+  if (typeof sessionId === "string" && sessionId.trim()) args.push("--session-id", sessionId.trim());
   if (resume) args.push("--resume", sessionPath);
   return { command: uv, args };
 }
@@ -27,7 +28,18 @@ function parseEventLine(line) {
     if (typeof payload.event !== "string" || !payload.data || typeof payload.data !== "object" || Array.isArray(payload.data)) {
       return null;
     }
-    return { event: payload.event, data: payload.data };
+    const envelope = { event: payload.event, data: payload.data };
+    if (payload.protocol_version !== undefined) {
+      if (!Number.isInteger(payload.protocol_version) || payload.protocol_version < 1
+          || typeof payload.session_id !== "string" || !payload.session_id
+          || typeof payload.run_id !== "string" || !payload.run_id
+          || !Number.isInteger(payload.sequence) || payload.sequence < 1) return null;
+      envelope.protocolVersion = payload.protocol_version;
+      envelope.sessionId = payload.session_id;
+      envelope.runId = payload.run_id;
+      envelope.sequence = payload.sequence;
+    }
+    return envelope;
   } catch {
     return null;
   }
@@ -77,7 +89,7 @@ function parseUnifiedDiff(diff = "") {
 }
 
 function desktopCapabilities() {
-  return { protocolVersion: 2, features: ["local_git_diff"] };
+  return { protocolVersion: 3, features: ["local_git_diff", "ordered_session_events", "persisted_approval"] };
 }
 
 function validateWorkspaceFolderName(value) {

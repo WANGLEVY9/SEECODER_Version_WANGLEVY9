@@ -21,15 +21,22 @@ test("selected mode is always forwarded so UI and backend cannot diverge", () =>
 });
 
 test("chat invocation persists and resumes a local session without a shell", () => {
-  const result = buildChatInvocation("uv", "/tmp/workspace", "ask", "/tmp/session.json", true);
+  const result = buildChatInvocation("uv", "/tmp/workspace", "ask", "/tmp/session.json", true, "session-123");
   assert.equal(result.command, "uv");
-  assert.deepEqual(result.args, ["run", "seecoder", "chat", "--workspace", "/tmp/workspace", "--event-json", "--save", "/tmp/session.json", "--mode", "ask", "--resume", "/tmp/session.json"]);
+  assert.deepEqual(result.args, ["run", "seecoder", "chat", "--workspace", "/tmp/workspace", "--event-json", "--save", "/tmp/session.json", "--mode", "ask", "--session-id", "session-123", "--resume", "/tmp/session.json"]);
 });
 
 test("event parser rejects malformed and non-object data", () => {
   assert.deepEqual(parseEventLine('{"event":"tool_result","data":{"ok":true}}'), { event: "tool_result", data: { ok: true } });
   assert.equal(parseEventLine("not json"), null);
   assert.equal(parseEventLine('{"event":"x","data":[]}'), null);
+});
+
+test("event parser preserves a validated ordered protocol envelope", () => {
+  assert.deepEqual(parseEventLine('{"protocol_version":3,"session_id":"s","run_id":"r","sequence":1,"event":"token","data":{"text":"x"}}'), {
+    event: "token", data: { text: "x" }, protocolVersion: 3, sessionId: "s", runId: "r", sequence: 1,
+  });
+  assert.equal(parseEventLine('{"protocol_version":3,"event":"token","data":{}}'), null);
 });
 
 test("git environment parser produces file and line-change summaries", () => {
@@ -70,8 +77,8 @@ test("unified diff parser classifies lines for the local review panel", () => {
   assert.deepEqual(lines.map((line) => line.kind), ["meta", "file", "file", "hunk", "removed", "added", "context"]);
 });
 
-test("desktop capability handshake advertises local Git review", () => {
-  assert.deepEqual(desktopCapabilities(), { protocolVersion: 2, features: ["local_git_diff"] });
+test("desktop capability handshake advertises ordered session events", () => {
+  assert.deepEqual(desktopCapabilities(), { protocolVersion: 3, features: ["local_git_diff", "ordered_session_events", "persisted_approval"] });
 });
 
 test("workspace creator accepts only one safe directory component", () => {

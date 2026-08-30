@@ -58,6 +58,9 @@ class Settings:
     # desktop chat process looking frozen forever. Providers may override it
     # with SEECODER_MODEL_TIMEOUT_S.
     model_timeout_s: float = 120.0
+    # Bounds a complete agent turn, including model/tool loops. Individual
+    # requests and commands retain their own narrower timeouts.
+    task_timeout_s: float = 600.0
     context_char_budget: int = 45_000
     command_timeout_s: int = 30
     command_max_timeout_s: int = 120
@@ -102,6 +105,13 @@ class Settings:
         if not 5 <= configured_model_timeout <= 900:
             raise ConfigError("SEECODER_MODEL_TIMEOUT_S must be between 5 and 900 seconds")
 
+        try:
+            configured_task_timeout = float(value("SEECODER_TASK_TIMEOUT_S", "600") or "600")
+        except ValueError as error:
+            raise ConfigError("SEECODER_TASK_TIMEOUT_S must be a number") from error
+        if not 10 <= configured_task_timeout <= 7200:
+            raise ConfigError("SEECODER_TASK_TIMEOUT_S must be between 10 and 7200 seconds")
+
         base_url = value("SEECODER_BASE_URL", "https://api.openai.com/v1")
         if not base_url or not base_url.startswith(("https://", "http://")):
             raise ConfigError("SEECODER_BASE_URL must be an HTTP(S) URL")
@@ -131,6 +141,7 @@ class Settings:
             base_url=base_url.rstrip("/"),
             max_steps=configured_max_steps,
             model_timeout_s=configured_model_timeout,
+            task_timeout_s=configured_task_timeout,
             allow_dangerous_commands=allow_dangerous_commands,
             execution_mode=configured_execution_mode,
             thinking_mode=thinking_mode,

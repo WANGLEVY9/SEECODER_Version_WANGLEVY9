@@ -10,7 +10,7 @@ from typing import Any
 
 from seecoder.config import Settings
 from seecoder.model_client import ModelClientError
-from seecoder.runner import DEFAULT_SYSTEM_PROMPT, AgentRunner
+from seecoder.runner import DEFAULT_SYSTEM_PROMPT, AgentRunner, CancellationToken
 from seecoder.trace import TraceWriter
 from seecoder.types import ChatMessage, ModelResponse, RunState, ToolCall
 
@@ -200,6 +200,22 @@ class AgentRunnerTests(unittest.TestCase):
         outcome = runner.run("Run a task")
         self.assertEqual(outcome.state, RunState.FAILED_MODEL)
         self.assertIn("provider unavailable", outcome.final_text)
+
+    def test_cancel_token_stops_before_a_model_request(self) -> None:
+        token = CancellationToken(); token.cancel()
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(), model_client=ScriptedModel([]), workspace=self.workspace,
+            cancellation_token=token,
+        )
+        outcome = runner.run("Cancel me")
+        self.assertEqual(outcome.state, RunState.CANCELLED)
+
+    def test_global_task_timeout_is_a_named_stop_condition(self) -> None:
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(task_timeout_s=0), model_client=ScriptedModel([]), workspace=self.workspace,
+        )
+        outcome = runner.run("Time out immediately")
+        self.assertEqual(outcome.state, RunState.STOP_TASK_TIMEOUT)
 
     def test_thinking_tool_turn_preserves_reasoning_for_next_request(self) -> None:
         reasoning = "inspect the workspace before making a change"

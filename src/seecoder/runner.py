@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -76,12 +78,31 @@ the new absolute path. For a non-root source directory, pass its workspace-relat
 same tool. Refuse to rename protected system folders, symbolic links, or an existing destination.
 You may edit files inside the selected workspace only through the supplied local tools."""
 
-Approver = Callable[[ToolCall], bool]
+Approver = Callable[[ToolCall], bool | None]
 EventSink = Callable[[str, dict[str, Any]], None]
 
 
 def _auto_allow(call: ToolCall) -> bool:
     return True
+
+
+class CancellationToken:
+    """Thread-safe cooperative cancellation for one agent run.
+
+    Model providers and subprocesses still have their own bounded timeouts;
+    this token is checked at every safe state-machine boundary and makes the
+    eventual terminal state explicit rather than relying on process killing.
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
 
 
 def _subagent_factory(settings: Settings, model_client: ModelClient, workspace: Path):
@@ -140,6 +161,7 @@ class AgentRunner:
         memory_block: str = "",
         stream_sink: Callable[[StreamEvent], None] | None = None,
         compactor: Callable[[list[ChatMessage]], str] | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> None:
         self.settings = settings
         self.model_client = model_client
@@ -151,10 +173,11 @@ class AgentRunner:
         self.memory_block = memory_block
         self.mode = mode
         self.policy = Policy(mode, read_only_resolver=tools.is_read_only)
-        self.approver = approver or _auto_allow
+        self.approver = approver
         self.stream_sink = stream_sink
         self.compactor = compactor
         self.workspace_boundary: WorkspaceBoundary | None = None
+        self.cancellation_token = cancellation_token or CancellationToken()
 
     @classmethod
     def for_workspace(
@@ -170,6 +193,7 @@ class AgentRunner:
         stream_sink: Callable[[StreamEvent], None] | None = None,
         compactor: Callable[[list[ChatMessage]], str] | None = None,
         enable_subagents: bool = True,
+        cancellation_token: CancellationToken | None = None,
     ) -> AgentRunner:
         boundary = WorkspaceBoundary(workspace)
         tool_instances: list[Any] = [
@@ -216,9 +240,15 @@ class AgentRunner:
             ),
             stream_sink=stream_sink,
             compactor=compactor,
+            cancellation_token=cancellation_token,
         )
         runner.workspace_boundary = boundary
         return runner
+
+    def cancel(self) -> None:
+        """Request cooperative cancellation of the current or next run."""
+
+        self.cancellation_token.cancel()
 
     def run(self, task: str) -> RunOutcome:
         """Run a single task from a fresh system+user conversation."""
@@ -283,8 +313,11 @@ class AgentRunner:
         return True
 
     def _run(self, messages: list[ChatMessage]) -> RunOutcome:
-        self._record("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps})
-        self._emit("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps})
+        deadline = time.monotonic() + self.settings.task_timeout_s
+        self._record("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps,
+                                     "task_timeout_s": self.settings.task_timeout_s})
+        self._emit("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps,
+                                   "task_timeout_s": self.settings.task_timeout_s})
         steps = 0
         consecutive_tool_errors = 0
         last_tool_error = ""
@@ -294,6 +327,9 @@ class AgentRunner:
         try:
             for step in range(1, self.settings.max_steps + 1):
                 steps = step
+                stopped = self._interrupt_outcome(deadline, steps - 1, total_usage)
+                if stopped is not None:
+                    return stopped
                 self._maybe_compact(messages)
                 self._record("model_request", {"step": step, "message_count": len(messages)})
                 self._emit("model_request", {"step": step})
@@ -310,7 +346,14 @@ class AgentRunner:
                         response = self.model_client.complete(prepared_messages, self.tools.schemas())
                 except ModelClientError as error:
                     final_text = f"Model request failed after bounded retries: {error}"
-                    return self._finish(RunState.FAILED_MODEL, final_text, steps - 1)
+                    return self._finish(
+                        RunState.FAILED_MODEL, final_text, steps - 1, usage=total_usage,
+                        partial_text=error.partial_text, recoverable=True,
+                    )
+
+                stopped = self._interrupt_outcome(deadline, steps, total_usage)
+                if stopped is not None:
+                    return stopped
 
                 if response.usage is not None:
                     total_usage = total_usage.plus(response.usage)
@@ -373,33 +416,30 @@ class AgentRunner:
                     },
                 )
                 calls = response.tool_calls
+                # ASK mode pauses before dispatching any mutation.  We keep
+                # every call in this provider turn pending so a later resume
+                # preserves assistant/tool-call ordering exactly.
+                if (self.mode == Mode.ASK and self.approver is None
+                        and any(not self.tools.is_read_only(call.name) for call in calls)):
+                    first_mutation = next(call for call in calls if not self.tools.is_read_only(call.name))
+                    self._emit("approval_request", {"name": first_mutation.name,
+                                                   "arguments": _safe_arguments(first_mutation)})
+                    self._record("approval_request", {"call": self._call_data(first_mutation),
+                                                       "pending_count": len(calls)})
+                    return self._finish(
+                        RunState.AWAITING_APPROVAL,
+                        f"Waiting for approval before running {first_mutation.name}.",
+                        steps,
+                        usage=total_usage,
+                        pending_calls=calls,
+                        recoverable=True,
+                    )
                 if calls and all(self.tools.is_read_only(call.name) for call in calls):
                     results = self._dispatch_parallel(calls)
                 else:
                     results = [self._dispatch_with_policy(call, plan_steps) for call in calls]
                 for call, result in zip(calls, results):
-                    self._record(
-                        "tool_result",
-                        {"step": step, "call": self._call_data(call), "result": result.as_dict()},
-                    )
-                    self._emit(
-                        "tool_result",
-                        {
-                            "name": call.name,
-                            "ok": result.ok,
-                            "error": result.error.kind if result.error else None,
-                            "purpose": _plan_description(call),
-                            "data": result.data,
-                            "meta": result.meta,
-                        },
-                    )
-                    messages.append(
-                        ChatMessage(
-                            role="tool",
-                            tool_call_id=call.id,
-                            content=json.dumps(result.as_dict(), ensure_ascii=False),
-                        )
-                    )
+                    self._append_tool_result(messages, step, call, result)
                     if not result.ok and not self._is_plan_notice(result):
                         consecutive_tool_errors += 1
                         last_tool_error = f"{call.name}: {result.error.message if result.error else 'unknown error'}"
@@ -421,6 +461,9 @@ class AgentRunner:
                         consecutive_tool_errors = 0
                         last_tool_error = ""
                         repeated_failures.clear()
+                    stopped = self._interrupt_outcome(deadline, steps, total_usage)
+                    if stopped is not None:
+                        return stopped
             return self._finish(
                 RunState.STOP_MAX_STEPS,
                 f"Stopped after reaching the configured maximum of {self.settings.max_steps} model steps.",
@@ -441,6 +484,78 @@ class AgentRunner:
             futures = [executor.submit(self.tools.dispatch, call) for call in calls]
             return [future.result() for future in futures]
 
+    def resume_pending(
+        self, messages: list[ChatMessage], pending_calls: tuple[ToolCall, ...], *, approved: bool
+    ) -> RunOutcome:
+        """Resolve one persisted ASK-mode decision and continue the same turn.
+
+        One approval authorizes exactly one mutating call.  If the model emitted
+        additional mutations in the same turn, execution pauses again before
+        each one; this keeps the approval boundary explicit and durable.
+        """
+
+        if self.mode != Mode.ASK:
+            raise ValueError("Only ASK-mode conversations can resolve a pending approval.")
+        if not pending_calls:
+            raise ValueError("There is no pending tool call to approve or deny.")
+        for index, call in enumerate(pending_calls):
+            if not self.tools.is_read_only(call.name):
+                result = (
+                    self.tools.dispatch(call)
+                    if approved
+                    else ToolResult.failure("DeniedByUser", "User denied this action in ask mode.")
+                )
+                self._append_tool_result(messages, 0, call, result)
+                remaining = pending_calls[index + 1 :]
+                next_mutation = next((item for item in remaining if not self.tools.is_read_only(item.name)), None)
+                # Dispatch any read-only observations before a later mutation.
+                read_only_prefix: list[ToolCall] = []
+                while remaining and self.tools.is_read_only(remaining[0].name):
+                    read_only_prefix.append(remaining[0])
+                    remaining = remaining[1:]
+                if read_only_prefix:
+                    for read_call, read_result in zip(read_only_prefix, self._dispatch_parallel(tuple(read_only_prefix))):
+                        self._append_tool_result(messages, 0, read_call, read_result)
+                if next_mutation is not None and remaining:
+                    self._emit("approval_request", {"name": next_mutation.name,
+                                                   "arguments": _safe_arguments(next_mutation)})
+                    self._record("approval_request", {"call": self._call_data(next_mutation),
+                                                       "pending_count": len(remaining)})
+                    return self._finish(
+                        RunState.AWAITING_APPROVAL,
+                        f"Waiting for approval before running {next_mutation.name}.", 0,
+                        pending_calls=remaining, recoverable=True,
+                    )
+                return self._run(messages)
+            # A pending sequence normally begins with read-only calls only if
+            # the provider mixed them with a mutation.  Execute those safely.
+            self._append_tool_result(messages, 0, call, self.tools.dispatch(call))
+        return self._run(messages)
+
+    def _append_tool_result(
+        self, messages: list[ChatMessage], step: int, call: ToolCall, result: ToolResult
+    ) -> None:
+        self._record("tool_result", {"step": step, "call": self._call_data(call), "result": result.as_dict()})
+        self._emit(
+            "tool_result",
+            {"name": call.name, "ok": result.ok, "error": result.error.kind if result.error else None,
+             "purpose": _plan_description(call), "data": result.data, "meta": result.meta},
+        )
+        messages.append(ChatMessage(role="tool", tool_call_id=call.id,
+                                    content=json.dumps(result.as_dict(), ensure_ascii=False)))
+
+    def _interrupt_outcome(self, deadline: float, steps: int, usage: Usage) -> RunOutcome | None:
+        if self.cancellation_token.cancelled:
+            return self._finish(RunState.CANCELLED, "Run cancelled by user.", steps, usage=usage,
+                                recoverable=True)
+        if time.monotonic() >= deadline:
+            return self._finish(
+                RunState.STOP_TASK_TIMEOUT,
+                f"Stopped after exceeding the task timeout of {self.settings.task_timeout_s:g} seconds.",
+                steps, usage=usage, recoverable=True,
+            )
+        return None
+
     def _dispatch_with_policy(
         self,
         call: ToolCall,
@@ -460,7 +575,7 @@ class AgentRunner:
         if decision == ApprovalDecision.NEEDS_APPROVAL:
             self._emit("approval_request", {"name": call.name, "arguments": _safe_arguments(call)})
             self._record("approval_request", {"call": self._call_data(call)})
-            if self.approver(call):
+            if self.approver is not None and self.approver(call):
                 return self.tools.dispatch(call)
             return ToolResult.failure("DeniedByUser", "User denied this action in ask mode.")
         return self.tools.dispatch(call)
@@ -477,6 +592,9 @@ class AgentRunner:
         *,
         plan: list[PlanStep] | None = None,
         usage: Usage | None = None,
+        pending_calls: tuple[ToolCall, ...] = (),
+        partial_text: str | None = None,
+        recoverable: bool = False,
     ) -> RunOutcome:
         outcome = RunOutcome(
             state=state,
@@ -486,6 +604,9 @@ class AgentRunner:
             plan=tuple(plan or ()),
             usage=usage or Usage(0, 0, 0),
             mode=self.mode,
+            pending_calls=pending_calls,
+            partial_text=partial_text,
+            recoverable=recoverable,
         )
         self._record("run_finished", {"state": state, "steps": steps, "final_text": final_text,
                                       "usage_total_tokens": outcome.usage.total_tokens})

@@ -12,7 +12,7 @@ from seecoder.model_client import (
     _reasoning_content_from_provider_message,
     _usage_from_response,
 )
-from seecoder.types import ChatMessage, ModelResponse, ToolCall
+from seecoder.types import ChatMessage, ModelResponse, StreamEvent, ToolCall
 
 
 class FlakyClient:
@@ -115,3 +115,33 @@ class ModelClientTests(unittest.TestCase):
         self.assertEqual(usage.prompt_tokens, 12)
         self.assertEqual(usage.completion_tokens, 8)
         self.assertEqual(usage.total_tokens, 20)
+
+    def test_stream_retries_only_before_any_delta_is_emitted(self) -> None:
+        class StreamClient:
+            def __init__(self) -> None: self.attempts = 0
+            def complete(self, messages, tools): raise AssertionError("not used")
+            def complete_stream(self, messages, tools):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise ModelClientError("disconnect", retryable=True)
+                yield StreamEvent(kind="done", response=ModelResponse("ok"))
+
+        client = StreamClient()
+        events = list(RetryingModelClient(client, retries=1, sleeper=lambda _: None).complete_stream([], []))
+        self.assertEqual(client.attempts, 2)
+        self.assertEqual(events[-1].response.content, "ok")
+
+    def test_stream_does_not_replay_after_a_partial_delta(self) -> None:
+        class StreamClient:
+            def __init__(self) -> None: self.attempts = 0
+            def complete(self, messages, tools): raise AssertionError("not used")
+            def complete_stream(self, messages, tools):
+                self.attempts += 1
+                yield StreamEvent(kind="content_delta", text="partial")
+                raise ModelClientError("disconnect", retryable=True, partial_text="partial")
+
+        client = StreamClient()
+        stream = RetryingModelClient(client, retries=2, sleeper=lambda _: None).complete_stream([], [])
+        self.assertEqual(next(stream).text, "partial")
+        with self.assertRaises(ModelClientError): next(stream)
+        self.assertEqual(client.attempts, 1)

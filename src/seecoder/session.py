@@ -16,7 +16,15 @@ from seecoder.trace import NullTraceWriter, TraceWriter
 from seecoder.types import ChatMessage, Mode, RunOutcome, RunState, ToolCall, Usage
 
 
-Approver = Callable[[ToolCall], bool]
+SNAPSHOT_VERSION = 2
+_MESSAGE_ROLES = {"system", "user", "assistant", "tool"}
+
+
+class SnapshotValidationError(ValueError):
+    """Raised before an untrusted session snapshot reaches the model client."""
+
+
+Approver = Callable[[ToolCall], bool | None]
 EventSink = Callable[[str, dict], None]
 
 
@@ -30,13 +38,48 @@ def _message_to_dict(message: ChatMessage) -> dict[str, object]:
     }
 
 
-def _message_from_dict(data: dict[str, object]) -> ChatMessage:
-    calls = tuple(
-        ToolCall(id=c["id"], name=c["name"], arguments=c["arguments"])
-        for c in (data.get("tool_calls") or [])
-    )
+def _tool_call_from_dict(data: object, *, label: str) -> ToolCall:
+    if not isinstance(data, dict) or set(data) != {"id", "name", "arguments"}:
+        raise SnapshotValidationError(f"{label} must contain exactly id, name, and arguments.")
+    if not all(isinstance(data[key], str) and data[key] for key in ("id", "name", "arguments")):
+        raise SnapshotValidationError(f"{label} fields id, name, and arguments must be non-empty strings.")
+    try:
+        arguments = json.loads(data["arguments"])
+    except json.JSONDecodeError as error:
+        raise SnapshotValidationError(f"{label}.arguments must be valid JSON.") from error
+    if not isinstance(arguments, dict):
+        raise SnapshotValidationError(f"{label}.arguments must encode a JSON object.")
+    return ToolCall(id=data["id"], name=data["name"], arguments=data["arguments"])
+
+
+def _message_from_dict(data: object, *, index: int) -> ChatMessage:
+    if not isinstance(data, dict):
+        raise SnapshotValidationError(f"messages[{index}] must be an object.")
+    required = {"role", "content", "tool_calls", "tool_call_id", "reasoning_content"}
+    if set(data) != required:
+        raise SnapshotValidationError(f"messages[{index}] has unsupported or missing fields.")
+    role = data["role"]
+    if not isinstance(role, str) or role not in _MESSAGE_ROLES:
+        raise SnapshotValidationError(f"messages[{index}].role is invalid.")
+    if data["content"] is not None and not isinstance(data["content"], str):
+        raise SnapshotValidationError(f"messages[{index}].content must be a string or null.")
+    if data["reasoning_content"] is not None and not isinstance(data["reasoning_content"], str):
+        raise SnapshotValidationError(f"messages[{index}].reasoning_content must be a string or null.")
+    if data["tool_call_id"] is not None and not isinstance(data["tool_call_id"], str):
+        raise SnapshotValidationError(f"messages[{index}].tool_call_id must be a string or null.")
+    raw_calls = data["tool_calls"]
+    if not isinstance(raw_calls, list):
+        raise SnapshotValidationError(f"messages[{index}].tool_calls must be a list.")
+    calls = tuple(_tool_call_from_dict(call, label=f"messages[{index}].tool_calls[{call_index}]")
+                  for call_index, call in enumerate(raw_calls))
+    if role == "tool" and (calls or not data["tool_call_id"]):
+        raise SnapshotValidationError(f"messages[{index}] tool messages require tool_call_id and no tool_calls.")
+    if role != "tool" and data["tool_call_id"] is not None:
+        raise SnapshotValidationError(f"messages[{index}] only tool messages may contain tool_call_id.")
+    if calls and role != "assistant":
+        raise SnapshotValidationError(f"messages[{index}] only assistant messages may contain tool_calls.")
     return ChatMessage(
-        role=str(data.get("role", "assistant")),
+        role=role,
         content=data.get("content"),
         tool_calls=calls,
         tool_call_id=data.get("tool_call_id"),
@@ -88,6 +131,7 @@ class Conversation:
         self._messages: list[ChatMessage] = []
         self._total_usage = Usage(0, 0, 0)
         self._total_steps = 0
+        self._pending_calls: tuple[ToolCall, ...] = ()
 
     @property
     def messages(self) -> list[ChatMessage]:
@@ -100,6 +144,10 @@ class Conversation:
     @property
     def total_steps(self) -> int:
         return self._total_steps
+
+    @property
+    def pending_calls(self) -> tuple[ToolCall, ...]:
+        return self._pending_calls
 
     def start(self, task: str) -> RunOutcome:
         """Begin a fresh conversation with the given task."""
@@ -116,10 +164,22 @@ class Conversation:
 
         if not self._messages:
             return self.start(text)
+        if self._pending_calls:
+            raise ValueError("An approval decision is required before sending a new message.")
         if not text.strip():
             raise ValueError("Message must be a non-empty string")
         self._messages.append(ChatMessage(role="user", content=text))
         return self._advance()
+
+    def resolve_approval(self, approved: bool) -> RunOutcome:
+        """Resume one persisted ASK-mode tool decision without replaying a model turn."""
+
+        if not self._pending_calls:
+            raise ValueError("There is no pending approval to resolve.")
+        pending = self._pending_calls
+        self._pending_calls = ()
+        outcome = self.runner.resume_pending(self._messages, pending, approved=approved)
+        return self._consume_outcome(outcome)
 
     def approve_plan(self) -> RunOutcome:
         """After a PLAN_PROPOSED outcome, switch to AUTO and execute the approved plan."""
@@ -141,7 +201,7 @@ class Conversation:
         """Serialize the conversation so it can be resumed later."""
 
         return {
-            "version": 1,
+            "version": SNAPSHOT_VERSION,
             "mode": self.current_mode.value,
             "workspace": str(self.workspace),
             "usage": {
@@ -151,6 +211,10 @@ class Conversation:
             },
             "steps": self._total_steps,
             "messages": [_message_to_dict(message) for message in self._messages],
+            "pending_approval": [
+                {"id": call.id, "name": call.name, "arguments": call.arguments}
+                for call in self._pending_calls
+            ],
         }
 
     def save(self, path: Path) -> Path:
@@ -179,15 +243,22 @@ class Conversation:
     def restore(self, data: dict[str, object]) -> None:
         """Rehydrate a serialized conversation onto an already-built runner."""
 
-        self._messages = [_message_from_dict(item) for item in (data.get("messages") or [])]
-        usage = data.get("usage") or {}
+        self._validate_snapshot(data)
+        self._messages = [_message_from_dict(item, index=index) for index, item in enumerate(data["messages"])]
+        usage = data["usage"]
         self._total_usage = Usage(
             int(usage.get("prompt_tokens", 0)),
             int(usage.get("completion_tokens", 0)),
             int(usage.get("total_tokens", 0)),
         )
-        self._total_steps = int(data.get("steps", 0))
-        self.current_mode = Mode(str(data.get("mode", "auto")))
+        self._total_steps = int(data["steps"])
+        self.current_mode = Mode(str(data["mode"]))
+        self._pending_calls = tuple(
+            _tool_call_from_dict(item, label=f"pending_approval[{index}]")
+            for index, item in enumerate(data["pending_approval"])
+        )
+        if self._pending_calls and self.current_mode != Mode.ASK:
+            raise SnapshotValidationError("Only ASK-mode snapshots may contain pending approvals.")
         self.runner.mode = self.current_mode
         self.runner.policy = Policy(self.current_mode, read_only_resolver=self.runner.tools.is_read_only)
 
@@ -208,7 +279,14 @@ class Conversation:
     ) -> Conversation:
         """Load a saved conversation and rehydrate it onto a fresh runner."""
 
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise SnapshotValidationError(f"Could not read session snapshot: {error}") from error
+        if not isinstance(data, dict):
+            raise SnapshotValidationError("Session snapshot root must be an object.")
+        data = cls._upgrade_snapshot(data)
+        cls._validate_snapshot(data)
         selected = Path(str(data.get("workspace"))) if workspace is None else workspace
         conversation = cls(
             settings=settings,
@@ -227,6 +305,9 @@ class Conversation:
 
     def _advance(self) -> RunOutcome:
         outcome = self.runner.run_messages(self._messages)
+        return self._consume_outcome(outcome)
+
+    def _consume_outcome(self, outcome: RunOutcome) -> RunOutcome:
         # A failed provider request does not produce an assistant message, so
         # the next user turn would otherwise be serialized as two adjacent
         # ``user`` messages. Record the failure as an assistant observation;
@@ -238,8 +319,9 @@ class Conversation:
             self._messages.append(
                 ChatMessage(
                     role="assistant",
-                    content="[Previous model attempt failed; continue from the user's latest request.]\n"
-                    + outcome.final_text,
+                    content=("[Previous model attempt failed; continue from the user's latest request.]\n"
+                             + ("[Partial streamed output preserved below]\n" + outcome.partial_text + "\n"
+                                if outcome.partial_text else "") + outcome.final_text),
                 )
             )
         # A local root rename updates the shared boundary. Persist that new
@@ -249,10 +331,69 @@ class Conversation:
         if outcome.usage is not None:
             self._total_usage = self._total_usage.plus(outcome.usage)
         self._total_steps += outcome.steps
+        self._pending_calls = outcome.pending_calls if outcome.state == RunState.AWAITING_APPROVAL else ()
         return outcome
 
     def reset(self) -> None:
         self._messages = []
         self._total_usage = Usage(0, 0, 0)
         self._total_steps = 0
+        self._pending_calls = ()
         self.current_mode = self.runner.mode
+
+    @staticmethod
+    def _validate_snapshot(data: dict[str, object]) -> None:
+        required = {"version", "mode", "workspace", "usage", "steps", "messages", "pending_approval"}
+        if set(data) != required:
+            raise SnapshotValidationError("Session snapshot has unsupported or missing top-level fields.")
+        if data["version"] != SNAPSHOT_VERSION:
+            raise SnapshotValidationError(
+                f"Unsupported session snapshot version {data['version']!r}; expected {SNAPSHOT_VERSION}."
+            )
+        if not isinstance(data["workspace"], str) or not data["workspace"]:
+            raise SnapshotValidationError("Session snapshot workspace must be a non-empty string.")
+        try:
+            Mode(str(data["mode"]))
+        except ValueError as error:
+            raise SnapshotValidationError("Session snapshot mode is invalid.") from error
+        if not isinstance(data["steps"], int) or data["steps"] < 0:
+            raise SnapshotValidationError("Session snapshot steps must be a non-negative integer.")
+        if not isinstance(data["messages"], list) or not isinstance(data["pending_approval"], list):
+            raise SnapshotValidationError("Session snapshot messages and pending_approval must be lists.")
+        usage = data["usage"]
+        if not isinstance(usage, dict) or set(usage) != {"prompt_tokens", "completion_tokens", "total_tokens"}:
+            raise SnapshotValidationError("Session snapshot usage fields are invalid.")
+        if any(not isinstance(value, int) or value < 0 for value in usage.values()):
+            raise SnapshotValidationError("Session snapshot usage values must be non-negative integers.")
+        expected_tool_ids: list[str] = []
+        for index, raw_message in enumerate(data["messages"]):
+            parsed = _message_from_dict(raw_message, index=index)
+            if parsed.role == "assistant" and parsed.tool_calls:
+                if expected_tool_ids:
+                    raise SnapshotValidationError("A new assistant tool-call turn appeared before prior tool results.")
+                expected_tool_ids = [call.id for call in parsed.tool_calls]
+            elif parsed.role == "tool":
+                if not expected_tool_ids or parsed.tool_call_id != expected_tool_ids.pop(0):
+                    raise SnapshotValidationError("Tool result order does not match the preceding assistant tool calls.")
+            elif expected_tool_ids:
+                raise SnapshotValidationError("A tool-call turn is missing one or more tool results.")
+        pending_ids = [
+            _tool_call_from_dict(raw, label=f"pending_approval[{index}]").id
+            for index, raw in enumerate(data["pending_approval"])
+        ]
+        if expected_tool_ids != pending_ids:
+            raise SnapshotValidationError("Pending approval calls must exactly match the unfinished assistant tool-call turn.")
+
+    @staticmethod
+    def _upgrade_snapshot(data: dict[str, object]) -> dict[str, object]:
+        """Migrate the former v1 durable format before strict v2 validation."""
+
+        if data.get("version") != 1:
+            return data
+        legacy_fields = {"version", "mode", "workspace", "usage", "steps", "messages"}
+        if set(data) != legacy_fields:
+            raise SnapshotValidationError("Legacy session snapshot has unsupported or missing fields.")
+        upgraded = dict(data)
+        upgraded["version"] = SNAPSHOT_VERSION
+        upgraded["pending_approval"] = []
+        return upgraded

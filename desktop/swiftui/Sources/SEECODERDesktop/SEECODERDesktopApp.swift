@@ -280,7 +280,7 @@ final class DesktopStore: ObservableObject {
     let sessionID = sessions[index].id.uuidString; let workspace = sessions[index].workspace; let storage = sessionStorageURL(id: sessionID).path
     let root = projectRootURL()
     let envFile = root.appendingPathComponent(".env")
-    guard let invocation = agentInvocation(root: root, workspace: workspace, storage: storage) else {
+    guard let invocation = agentInvocation(root: root, workspace: workspace, storage: storage, sessionID: sessionID) else {
       lastSubmittedTask = nil; lastSubmittedAt = nil
       isRunning = false
       append(.system, "无法启动本地 AgentRunner：找不到 uv 或项目虚拟环境中的 Python。请先在项目根目录运行 uv sync。")
@@ -389,6 +389,13 @@ final class DesktopStore: ObservableObject {
     case "usage": addTimeline("用量更新", detail: "累计 tokens：\(data["total_tokens"] ?? "-")", tone: .info)
     case "run_finished":
       let state = data["state"] as? String ?? "unknown"
+      if state == "awaiting_approval" {
+        let calls = data["pending_calls"] as? [[String: Any]] ?? []
+        let name = calls.first?["name"] as? String ?? "本地操作"
+        pendingApproval = PendingApproval(kind: .tool, title: name, detail: "该操作正在等待你的批准，并会在重启后保留")
+        addTimeline("等待批准", detail: "状态：awaiting_approval · \(name)", tone: .warning)
+        return
+      }
       let tone: TimelineEvent.Tone = state == "final" || state == "plan_proposed" ? .success : .failure
       addTimeline(state == "final" ? "运行结束" : "运行停止", detail: "状态：\(state)，共 \(data["steps"] ?? "-") 步", tone: tone)
     case "configuration_error": let message = data["message"] as? String ?? "配置错误"; addTimeline("无法启动任务", detail: message, tone: .failure); append(.system, message); isRunning = false
@@ -400,7 +407,7 @@ final class DesktopStore: ObservableObject {
       } else {
         isRunning = false; pendingApproval = nil
         let terminalTone: TimelineEvent.Tone = state == "final" ? .success : .failure
-        let recoverable = data["recoverable"] as? Bool ?? ["failed_model", "failed_protocol", "stop_context_budget"].contains(state)
+        let recoverable = data["recoverable"] as? Bool ?? ["failed_model", "failed_protocol", "stop_context_budget", "stop_task_timeout", "cancelled"].contains(state)
         let detail = recoverable && state != "final" ? "状态：\(state) · 上一轮已保留，可继续发送" : "状态：\(state)"
         addTimeline(state == "final" ? "任务完成" : "任务结束", detail: detail, tone: terminalTone)
         activity.insert(state == "final" ? "任务完成" : "任务结束 · \(state)", at: 0)
@@ -450,19 +457,19 @@ final class DesktopStore: ObservableObject {
     save()
   }
   private func run(_ executable: String, _ arguments: [String]) -> String { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = [executable] + arguments; let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe(); do { try p.run(); p.waitUntilExit(); return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) } catch { return "" } }
-  private func agentInvocation(root: URL, workspace: String, storage: String) -> (executable: URL, arguments: [String])? {
+  private func agentInvocation(root: URL, workspace: String, storage: String, sessionID: String) -> (executable: URL, arguments: [String])? {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     let configured = ProcessInfo.processInfo.environment["SEECODER_UV"]
     let inheritedPath = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").map { String($0) + "/uv" } ?? []
     let uvCandidates = ([configured, "/opt/homebrew/bin/uv", "/usr/local/bin/uv", "\(home)/.local/bin/uv", "\(home)/.cargo/bin/uv"] + inheritedPath).compactMap { $0 }.map(URL.init(fileURLWithPath:))
     if let uv = uvCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
-      var arguments = ["run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage]
+      var arguments = ["run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage, "--session-id", sessionID]
       if FileManager.default.fileExists(atPath: storage) { arguments.append(contentsOf: ["--resume", storage]) }
       return (uv, arguments)
     }
     let pythonCandidates = [root.appendingPathComponent(".venv/bin/python"), root.appendingPathComponent(".venv/bin/python3"), URL(fileURLWithPath: "/opt/homebrew/opt/python@3.12/bin/python3.12"), URL(fileURLWithPath: "/opt/homebrew/bin/python3"), URL(fileURLWithPath: "/usr/local/bin/python3")]
     if let python = pythonCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
-      var arguments = ["-m", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage]
+      var arguments = ["-m", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage, "--session-id", sessionID]
       if FileManager.default.fileExists(atPath: storage) { arguments.append(contentsOf: ["--resume", storage]) }
       return (python, arguments)
     }

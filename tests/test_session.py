@@ -11,7 +11,7 @@ from typing import Any
 
 from seecoder.config import Settings
 from seecoder.model_client import ModelClientError
-from seecoder.session import Conversation
+from seecoder.session import Conversation, SnapshotValidationError
 from seecoder.types import Mode, ModelResponse, RunState, ToolCall
 
 
@@ -163,3 +163,34 @@ class ConversationTests(unittest.TestCase):
             self.assertEqual(data["workspace"], str(renamed.resolve()))
         finally:
             shutil.rmtree(renamed, ignore_errors=True)
+
+    def test_ask_approval_is_persisted_and_resumable(self) -> None:
+        model = ScriptedModel([
+            ModelResponse(None, (call("write", "write_file", {"path": "x.txt", "content": "ok"}),)),
+        ])
+        conversation = Conversation(settings=self.settings, model_client=model, workspace=self.workspace, mode=Mode.ASK)
+        waiting = conversation.start("Write x.txt")
+        self.assertEqual(waiting.state, RunState.AWAITING_APPROVAL)
+        self.assertEqual(len(conversation.pending_calls), 1)
+        snapshot = self.workspace / "waiting.json"
+        conversation.save(snapshot)
+
+        resumed = Conversation.load(
+            snapshot, settings=self.settings,
+            model_client=ScriptedModel([ModelResponse("Created x.txt.")]), workspace=self.workspace,
+        )
+        self.assertEqual(len(resumed.pending_calls), 1)
+        finished = resumed.resolve_approval(True)
+        self.assertEqual(finished.state, RunState.FINAL)
+        self.assertEqual((self.workspace / "x.txt").read_text(encoding="utf-8"), "ok")
+
+    def test_snapshot_rejects_invalid_role_and_tool_call_shape(self) -> None:
+        path = self.workspace / "invalid.json"
+        path.write_text(json.dumps({
+            "version": 2, "mode": "auto", "workspace": str(self.workspace),
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, "steps": 0,
+            "pending_approval": [],
+            "messages": [{"role": "hacker", "content": "x", "tool_calls": [], "tool_call_id": None, "reasoning_content": None}],
+        }), encoding="utf-8")
+        with self.assertRaises(SnapshotValidationError):
+            Conversation.load(path, settings=self.settings, model_client=ScriptedModel([]), workspace=self.workspace)

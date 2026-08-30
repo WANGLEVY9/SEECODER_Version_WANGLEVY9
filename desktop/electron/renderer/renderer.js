@@ -9,7 +9,7 @@ const SUGGESTIONS = [
   { icon: "🧐", label: "审查代码并提出修改建议", task: "审查当前工作区的代码质量，指出潜在 bug、边界与安全问题，并给出可落地的修改建议。" },
   { icon: "🔥", label: "修复问题和失败", task: "定位当前工作区里失败的测试或缺陷，做最小修复，然后运行测试确认通过。" },
 ];
-const state = { sessions: loadSessions(), currentId: null, running: false, submitting: false, mode: loadMode(), usageTotal: 0, lastRun: null, lastSubmission: null, reviewAvailable: false, desktopMessage: '正在检查桌面内核…', review: { open: false, path: null, lines: [], loading: false, error: "" } };
+const state = { sessions: loadSessions(), currentId: null, running: false, submitting: false, mode: loadMode(), usageTotal: 0, lastRun: null, lastSubmission: null, eventSequences: new Map(), reviewAvailable: false, desktopMessage: '正在检查桌面内核…', review: { open: false, path: null, lines: [], loading: false, error: "" } };
 
 const $ = (selector) => document.querySelector(selector);
 const sessionList = $('#session-list');
@@ -355,6 +355,12 @@ async function sendTask() {
 function approveCurrent(decision) { const session = current(); if (session) window.seecoderDesktop.approve({ sessionId: session.id, decision }); }
 function handleRunnerEvent(payload) {
   if (payload?.sessionId && payload.sessionId !== state.currentId) return;
+  if (payload?.protocolVersion) {
+    const key = String(payload.sessionId || '') + '\u0000' + String(payload.runId || '');
+    const previous = state.eventSequences.get(key) || 0;
+    if (!Number.isInteger(payload.sequence) || payload.sequence <= previous) return;
+    state.eventSequences.set(key, payload.sequence);
+  }
   const { event, data } = payload || {};
   if (event === 'usage') { state.usageTotal = data?.total_tokens || state.usageTotal; setCost(state.usageTotal); return; }
   if (event === 'token') { const el = ensureLiveAgent(); if (el) { liveAgentText += (data?.text || ''); el.classList.add('markdown'); el.innerHTML = markdownToHtml(liveAgentText); conversation.scrollTop = conversation.scrollHeight; } return; }
@@ -372,6 +378,12 @@ function handleRunnerEvent(payload) {
   if (event === 'turn_outcome') {
     const stateName = data?.state || 'unknown';
     const planSteps = Array.isArray(data?.plan) ? data.plan : [];
+    if (stateName === 'awaiting_approval') {
+      const call = Array.isArray(data?.pending_calls) ? data.pending_calls.find((item) => item && item.name) : null;
+      showApproval('批准工具调用：' + (call?.name || '未知工具') + '？', () => approveCurrent(true), () => approveCurrent(false));
+      addActivity('等待批准', call?.name || '持久化审批状态', 'running');
+      liveAgentEl = null; liveAgentText = ''; setBadge('待批准', 'running'); render(); return;
+    }
     if (stateName === 'plan_proposed') {
       const planLines = planSteps.map((s) => '- ' + (s.description || s.tool)).join('\n');
       appendMessage('agent', planLines ? (data?.final_text || '') + '\n' + planLines : (data?.final_text || '计划已生成。'));
@@ -381,7 +393,7 @@ function handleRunnerEvent(payload) {
     }
     hideApproval();
     appendMessage('agent', data?.final_text || '任务结束，但没有收到可显示的总结。');
-    const recoverable = data?.recoverable || ['failed_model', 'failed_protocol', 'stop_context_budget'].includes(stateName);
+    const recoverable = data?.recoverable || ['failed_model', 'failed_protocol', 'stop_context_budget', 'stop_task_timeout', 'cancelled'].includes(stateName);
     const activityDetail = recoverable && stateName !== 'final'
       ? (data?.steps ?? 0) + ' 步 · 上一轮已保留，可继续发送下一条指令或重试'
       : (data?.steps ?? 0) + ' 步';

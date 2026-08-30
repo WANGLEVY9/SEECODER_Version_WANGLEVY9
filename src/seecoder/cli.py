@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,34 @@ from seecoder.runner import AgentRunner
 from seecoder.session import Conversation
 from seecoder.trace import TraceWriter
 from seecoder.types import Mode, RunState, ToolCall
+
+
+EVENT_PROTOCOL_VERSION = 3
+
+
+class EventJsonEmitter:
+    """Versioned, ordered event envelope shared by CLI and desktop clients."""
+
+    def __init__(self, session_id: str | None = None) -> None:
+        self.session_id = session_id or str(uuid.uuid4())
+        self.run_id = ""
+        self.sequence = 0
+
+    def begin_run(self) -> str:
+        self.run_id = str(uuid.uuid4())
+        return self.run_id
+
+    def emit(self, event: str, data: dict[str, Any]) -> None:
+        self.sequence += 1
+        print(json.dumps({"protocol_version": EVENT_PROTOCOL_VERSION, "session_id": self.session_id,
+                          "run_id": self.run_id, "sequence": self.sequence,
+                          "event": event, "data": data}, ensure_ascii=False, default=str), flush=True)
+
+    def stream(self, event: Any) -> None:
+        if event.kind == "content_delta":
+            self.emit("token", {"text": event.text})
+        elif event.kind == "reasoning_delta":
+            self.emit("reasoning", {"text": event.text})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode", choices=["auto", "plan", "ask"], default=None,
         help="auto: run tools freely; plan: inspect only and propose a plan; ask: confirm mutations",
     )
+    run.add_argument("--session-id", help="stable local session identifier for the event protocol")
     run.add_argument(
         "--auto-approve", action="store_true",
         help="treat ask mode like auto for approval (never prompt)",
@@ -71,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="emit local runner events as JSONL for the bundled desktop UI")
     chat.add_argument("--resume", type=Path, help="resume a saved conversation from this JSON file")
     chat.add_argument("--save", type=Path, help="save the conversation to this JSON file after each turn")
+    chat.add_argument("--session-id", help="stable local session identifier for the event protocol")
     return parser
 
 
@@ -141,6 +172,22 @@ def _make_approver(mode: Mode, auto_approve: bool, stream: Any) -> Any:
     return _stdin_approver(stream)
 
 
+def _outcome_data(outcome: Any) -> dict[str, Any]:
+    return {
+        "state": outcome.state, "final_text": outcome.final_text, "steps": outcome.steps,
+        "trace_path": outcome.trace_path, "mode": outcome.mode.value,
+        "plan": [step.__dict__ for step in outcome.plan],
+        "usage": {"total_tokens": outcome.usage.total_tokens} if outcome.usage else {},
+        "pending_calls": [{"id": call.id, "name": call.name, "arguments": call.arguments}
+                          for call in outcome.pending_calls],
+        "partial_text": outcome.partial_text,
+        "recoverable": outcome.recoverable or outcome.state in {
+            RunState.FAILED_MODEL, RunState.FAILED_PROTOCOL, RunState.STOP_CONTEXT_BUDGET,
+            RunState.STOP_TASK_TIMEOUT, RunState.CANCELLED, RunState.AWAITING_APPROVAL,
+        },
+    }
+
+
 def _exit_code(state: RunState) -> int:
     return {
         RunState.FINAL: 0,
@@ -149,6 +196,7 @@ def _exit_code(state: RunState) -> int:
         RunState.STOP_MAX_STEPS: 3,
         RunState.STOP_TOOL_ERROR_LIMIT: 3,
         RunState.STOP_CONTEXT_BUDGET: 3,
+        RunState.STOP_TASK_TIMEOUT: 3,
         RunState.FAILED_MODEL: 4,
         RunState.FAILED_PROTOCOL: 4,
         RunState.CANCELLED: 130,
@@ -184,25 +232,23 @@ def _run_run(args: Any, settings: Settings, trace: TraceWriter, workspace: Path)
     mode = Mode(args.mode) if args.mode else settings.mode
     approver = _make_approver(mode, args.auto_approve, sys.stdin)
     client = RetryingModelClient(OpenAICompatibleClient(settings), retries=settings.model_retries)
+    emitter = EventJsonEmitter(getattr(args, "session_id", None)) if args.event_json else None
+    if emitter is not None:
+        emitter.begin_run()
     runner = AgentRunner.for_workspace(
         settings=settings,
         model_client=client,
         workspace=workspace,
         trace=trace,
-        event_sink=_event_json_printer if args.event_json else (None if args.quiet else _event_printer),
+        event_sink=emitter.emit if emitter is not None else (None if args.quiet else _event_printer),
         mode=mode,
         approver=approver,
-        stream_sink=_token_json_printer if args.event_json else None,
+        stream_sink=emitter.stream if emitter is not None else None,
         compactor=_make_compactor(settings, client),
     )
     outcome = runner.run(args.task)
-    if args.event_json:
-        print(json.dumps({"event": "run_outcome", "data": {
-            "state": outcome.state, "final_text": outcome.final_text, "steps": outcome.steps,
-            "trace_path": outcome.trace_path, "mode": outcome.mode.value,
-            "plan": [step.__dict__ for step in outcome.plan],
-            "usage": {"total_tokens": outcome.usage.total_tokens} if outcome.usage else {},
-        }}, ensure_ascii=False))
+    if emitter is not None:
+        emitter.emit("run_outcome", _outcome_data(outcome))
     else:
         _print_outcome(outcome, quiet=args.quiet)
     return _exit_code(outcome.state)
@@ -210,9 +256,12 @@ def _run_run(args: Any, settings: Settings, trace: TraceWriter, workspace: Path)
 
 def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path) -> int:
     mode = Mode(args.mode) if args.mode else settings.mode
-    approver = _make_approver(mode, args.auto_approve, sys.stdin)
+    # Event-json clients receive a durable approval event and send y/n back to
+    # this process.  They must never block inside a tool dispatcher.
+    approver = None if args.event_json and mode == Mode.ASK and not args.auto_approve else _make_approver(mode, args.auto_approve, sys.stdin)
     client = RetryingModelClient(OpenAICompatibleClient(settings), retries=settings.model_retries)
-    event_sink = _event_json_printer if args.event_json else (None if args.quiet else _event_printer)
+    emitter = EventJsonEmitter(getattr(args, "session_id", None)) if args.event_json else None
+    event_sink = emitter.emit if emitter is not None else (None if args.quiet else _event_printer)
     resume = getattr(args, "resume", None)
     if resume is not None:
         # The snapshot owns the conversation mode. Build the approver from the
@@ -222,11 +271,11 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
             persisted_mode = Mode(str(json.loads(resume.read_text(encoding="utf-8")).get("mode", mode.value)))
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             persisted_mode = mode
-        approver = _make_approver(persisted_mode, args.auto_approve, sys.stdin)
+        approver = None if args.event_json and persisted_mode == Mode.ASK and not args.auto_approve else _make_approver(persisted_mode, args.auto_approve, sys.stdin)
         conversation = Conversation.load(
             resume, settings=settings, model_client=client, workspace=workspace,
             trace=trace, event_sink=event_sink, approver=approver,
-            stream_sink=_token_json_printer if args.event_json else None,
+            stream_sink=emitter.stream if emitter is not None else None,
             compactor=_make_compactor(settings, client),
         )
         print("Resumed saved conversation from " + str(resume) + ".", file=sys.stderr)
@@ -235,7 +284,7 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
         conversation = Conversation(
             settings=settings, model_client=client, workspace=workspace,
             trace=trace, event_sink=event_sink, mode=mode, approver=approver,
-            stream_sink=_token_json_printer if args.event_json else None,
+            stream_sink=emitter.stream if emitter is not None else None,
             compactor=_make_compactor(settings, client),
         )
         first = True
@@ -246,17 +295,15 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
         if not text:
             continue
         try:
+            if emitter is not None:
+                emitter.begin_run()
             outcome = conversation.start(text) if first else conversation.send(text)
         except Exception as error:  # Keep the long-lived chat process usable after one bad turn.
             final_text = f"Local turn failed: {type(error).__name__}: {error}"
-            if args.event_json:
-                print(json.dumps({"event": "turn_outcome", "data": {
-                    "state": RunState.FAILED_PROTOCOL,
-                    "final_text": final_text,
-                    "steps": 0,
-                    "mode": conversation.current_mode.value,
-                    "recoverable": True,
-                }}, ensure_ascii=False), flush=True)
+            if emitter is not None:
+                emitter.emit("turn_outcome", {"state": RunState.FAILED_PROTOCOL, "final_text": final_text,
+                                               "steps": 0, "mode": conversation.current_mode.value,
+                                               "recoverable": True})
             else:
                 print(final_text, file=sys.stderr, flush=True)
             if save is not None:
@@ -266,21 +313,14 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
         first = False
         if save is not None:
             conversation.save(save)
-        if args.event_json:
-            print(json.dumps({"event": "turn_outcome", "data": {
-                "state": outcome.state, "final_text": outcome.final_text, "steps": outcome.steps,
-                "mode": outcome.mode.value,
-                "plan": [step.__dict__ for step in outcome.plan],
-                "recoverable": outcome.state in {RunState.FAILED_MODEL, RunState.FAILED_PROTOCOL, RunState.STOP_CONTEXT_BUDGET},
-            }}, ensure_ascii=False), flush=True)
+        if emitter is not None:
+            emitter.emit("turn_outcome", _outcome_data(outcome))
         else:
             _print_outcome(outcome, quiet=args.quiet)
         if outcome.state == RunState.PLAN_PROPOSED and not args.auto_approve:
             prompt = "Approve the proposed plan and execute it? (y/N): "
-            if args.event_json:
-                print(json.dumps({"event": "plan_approval_request", "data": {
-                    "message": "Plan mode produced a mutation plan. Approve it to execute locally.",
-                }}, ensure_ascii=False), flush=True)
+            if emitter is not None:
+                emitter.emit("plan_approval_request", {"message": "Plan mode produced a mutation plan. Approve it to execute locally."})
             if sys.stdin.isatty():
                 reply = input(prompt)
             else:
@@ -293,13 +333,24 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
                 # would restore the pre-approval snapshot and replay the plan.
                 if save is not None:
                     conversation.save(save)
-                if args.event_json:
-                    print(json.dumps({"event": "turn_outcome", "data": {
-                        "state": executed.state, "final_text": executed.final_text,
-                        "steps": executed.steps, "mode": executed.mode.value,
-                    }}, ensure_ascii=False), flush=True)
+                if emitter is not None:
+                    emitter.emit("turn_outcome", _outcome_data(executed))
                 else:
                     _print_outcome(executed, quiet=args.quiet)
+        while outcome.state == RunState.AWAITING_APPROVAL:
+            prompt = "Approve the requested local action? (y/N): "
+            if sys.stdin.isatty():
+                reply = input(prompt)
+            else:
+                print(prompt, file=sys.stderr, end="")
+                reply = sys.stdin.readline()
+            outcome = conversation.resolve_approval(reply.strip().lower().startswith("y"))
+            if save is not None:
+                conversation.save(save)
+            if emitter is not None:
+                emitter.emit("turn_outcome", _outcome_data(outcome))
+            else:
+                _print_outcome(outcome, quiet=args.quiet)
     return 0
 
 
@@ -335,7 +386,9 @@ def main(argv: list[str] | None = None) -> int:
         return _run_chat(args, settings, trace, workspace)
     except (ConfigError, ValueError) as error:
         if getattr(args, "event_json", False):
-            print(json.dumps({"event": "configuration_error", "data": {"message": str(error)}}, ensure_ascii=False))
+            emitter = EventJsonEmitter(getattr(args, "session_id", None))
+            emitter.begin_run()
+            emitter.emit("configuration_error", {"message": str(error)})
         else:
             print(f"Configuration error: {error}", file=sys.stderr)
         return 2
