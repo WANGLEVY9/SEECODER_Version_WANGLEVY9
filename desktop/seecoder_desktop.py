@@ -207,9 +207,19 @@ class DesktopApp:
         )
 
     def _build_sidebar(self, parent: tk.Frame) -> None:
-        tk.Label(parent, text="SEECODER", background=SIDEBAR, foreground=TEXT, font=("Helvetica Neue", 18, "bold")).pack(
-            anchor="w", padx=18, pady=(20, 4)
-        )
+        logo_path = self.project_root / "assets" / "seecoder-logo.png"
+        try:
+            self.logo_photo = tk.PhotoImage(file=str(logo_path))
+            # Keep the complete mark visible without stretching the sidebar.
+            scale = max(1, self.logo_photo.width() // 42)
+            if scale > 1:
+                self.logo_photo = self.logo_photo.subsample(scale, scale)
+            tk.Label(parent, image=self.logo_photo, background=SIDEBAR).pack(anchor="w", padx=18, pady=(14, 4))
+        except (tk.TclError, OSError):
+            self.logo_photo = None
+            tk.Label(parent, text="SEECODER", background=SIDEBAR, foreground=TEXT, font=("Helvetica Neue", 18, "bold")).pack(
+                anchor="w", padx=18, pady=(20, 4)
+            )
         tk.Label(parent, text="本地编程智能体 · Local Agent", background=SIDEBAR, foreground=MUTED, font=("Helvetica Neue", 11)).pack(
             anchor="w", padx=18, pady=(0, 20)
         )

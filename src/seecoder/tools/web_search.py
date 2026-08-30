@@ -59,6 +59,7 @@ def _parse_results(page: str, maximum: int) -> list[dict[str, str]]:
 
 
 class WebSearchTool:
+    capability = "read"
     name = "web_search"
     description = (
         "Search the web for a query and return bounded results (title, url, snippet). "

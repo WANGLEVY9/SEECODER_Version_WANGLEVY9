@@ -10,12 +10,16 @@ from pathlib import Path
 
 from seecoder.tools import (
     ApplyPatchTool,
+    CopyFileTool,
+    CreateDirectoryTool,
+    DeleteFileTool,
     GitDiffTool,
     GitLogTool,
     GitStatusTool,
     GitShowTool,
     ListFilesTool,
     ListSkillsTool,
+    MoveFileTool,
     FindFilesTool,
     ProjectOverviewTool,
     ReadFileTool,
@@ -57,12 +61,46 @@ class LocalToolsTests(unittest.TestCase):
         created = tool.execute({"path": "generated/output.py", "content": "print('ok')\n"})
         self.assertTrue(created.ok)
         self.assertEqual((self.root / "generated" / "output.py").read_text(encoding="utf-8"), "print('ok')\n")
+        self.assertEqual(created.data["added_lines"], 1)
+        self.assertEqual(created.data["deleted_lines"], 0)
 
         outside = ToolRegistry.create([tool]).dispatch(
             ToolCall(id="escape", name="write_file", arguments=json.dumps({"path": "../outside.txt", "content": "no"}))
         )
         self.assertFalse(outside.ok)
         self.assertEqual(outside.error.kind, "ValidationError")
+
+    def test_delete_file_removes_one_workspace_file_and_protects_metadata(self) -> None:
+        temporary = self.root / "temporary-test.py"
+        temporary.write_text("print('ok')\n", encoding="utf-8")
+        result = ToolRegistry.create([DeleteFileTool(self.boundary)]).dispatch(
+            ToolCall(id="delete", name="delete_file", arguments=json.dumps({"path": "temporary-test.py"}))
+        )
+        self.assertTrue(result.ok)
+        self.assertFalse(temporary.exists())
+        self.assertEqual(result.data["deleted_lines"], 1)
+        protected = self.root / ".git"
+        protected.mkdir()
+        (protected / "config").write_text("private", encoding="utf-8")
+        blocked = DeleteFileTool(self.boundary).execute({"path": ".git/config"})
+        self.assertFalse(blocked.ok)
+        self.assertEqual(blocked.error.kind, "ProtectedPath")
+
+    def test_create_copy_and_move_file_tools_are_workspace_confined(self) -> None:
+        create = CreateDirectoryTool(self.boundary).execute({"path": "generated/nested"})
+        self.assertTrue(create.ok)
+        source = self.root / "src" / "sample.txt"
+        copied = CopyFileTool(self.boundary).execute({"source": "src/sample.txt", "destination": "generated/nested/copy.txt"})
+        self.assertTrue(copied.ok)
+        self.assertEqual((self.root / "generated/nested/copy.txt").read_text(encoding="utf-8"), source.read_text(encoding="utf-8"))
+        self.assertEqual(copied.data["added_lines"], 3)
+        moved = MoveFileTool(self.boundary).execute({"source": "generated/nested/copy.txt", "destination": "generated/moved.txt"})
+        self.assertTrue(moved.ok)
+        self.assertFalse((self.root / "generated/nested/copy.txt").exists())
+        self.assertTrue((self.root / "generated/moved.txt").is_file())
+        overwrite = CopyFileTool(self.boundary).execute({"source": "src/sample.txt", "destination": "generated/moved.txt"})
+        self.assertFalse(overwrite.ok)
+        self.assertEqual(overwrite.error.kind, "DestinationExists")
 
     def test_rename_directory_moves_code_folder_inside_workspace(self) -> None:
         source = self.root / "src" / "legacy"
@@ -131,6 +169,41 @@ class LocalToolsTests(unittest.TestCase):
         unknown = registry.dispatch(ToolCall(id="2", name="not_real", arguments="{}"))
         self.assertEqual(malformed.error.kind, "InvalidArguments")
         self.assertEqual(unknown.error.kind, "UnknownTool")
+        self.assertIn("Available tools: read_file", unknown.error.message)
+
+    def test_dispatch_enforces_declared_schema_before_tool_execution(self) -> None:
+        registry = ToolRegistry.create([ReadFileTool(self.boundary)])
+        missing = registry.dispatch(ToolCall(id="1", name="read_file", arguments="{}"))
+        unknown = registry.dispatch(ToolCall(id="2", name="read_file", arguments=json.dumps({"path": "src/sample.txt", "extra": 1})))
+        wrong_type = registry.dispatch(ToolCall(id="3", name="read_file", arguments=json.dumps({"path": 1})))
+        self.assertEqual(missing.error.kind, "InvalidArguments")
+        self.assertIn("path is required", missing.error.message)
+        self.assertIn("unknown field", unknown.error.message)
+        self.assertIn("must be string", wrong_type.error.message)
+
+    def test_dispatch_enforces_array_bounds(self) -> None:
+        tool = RunCommandTool(self.boundary, execution_mode="restricted")
+        registry = ToolRegistry.create([tool])
+        empty = registry.dispatch(ToolCall(id="empty", name="run_command", arguments=json.dumps({"argv": []})))
+        oversized = registry.dispatch(ToolCall(id="oversized", name="run_command", arguments=json.dumps({"argv": ["git"] * 33})))
+        self.assertIn("at least 1", empty.error.message)
+        self.assertIn("at most 32", oversized.error.message)
+
+    def test_restricted_mode_supports_common_project_validation_commands(self) -> None:
+        tool = RunCommandTool(self.boundary, execution_mode="restricted")
+        self.assertEqual(tool._restricted_argv({"argv": ["npm", "test"]}), ["npm", "test"])
+        self.assertEqual(tool._restricted_argv({"argv": ["cargo", "check"]}), ["cargo", "check"])
+        self.assertEqual(tool._restricted_argv({"argv": ["swift", "build"]}), ["swift", "build"])
+        blocked = tool._restricted_argv({"argv": ["npm", "install"]})
+        self.assertFalse(blocked.ok)
+        self.assertIn("limited", blocked.error.message)
+
+    def test_mutation_tools_cannot_write_protected_directories(self) -> None:
+        protected = self.root / ".git"
+        protected.mkdir()
+        result = WriteFileTool(self.boundary).execute({"path": ".git/config", "content": "unsafe"})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error.kind, "ProtectedPath")
 
     def test_command_returns_nonzero_as_observation_and_scrubs_secrets(self) -> None:
         old_value = os.environ.get("SEECODER_API_KEY")
@@ -256,6 +329,8 @@ class LocalToolsTests(unittest.TestCase):
         )
         self.assertTrue(result.ok)
         self.assertEqual(path.read_text(encoding="utf-8"), "value = 'new'\n")
+        self.assertEqual(result.data["added_lines"], 1)
+        self.assertEqual(result.data["deleted_lines"], 1)
 
     def test_patch_rejects_ambiguous_or_missing_context(self) -> None:
         path = self.root / "src" / "ambiguous.py"
@@ -287,6 +362,27 @@ class LocalToolsTests(unittest.TestCase):
         result = GitDiffTool(self.boundary).execute({})
         self.assertFalse(result.ok)
         self.assertEqual(result.error.kind, "NotGitRepository")
+
+    def test_git_diff_includes_staged_and_untracked_files(self) -> None:
+        subprocess.run(["git", "init", "--quiet", str(self.root)], check=True)
+        target = self.root / "src" / "sample.txt"
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--quiet", "-m", "fixture"],
+            cwd=self.root,
+            check=True,
+        )
+        target.write_text("staged-change\n", encoding="utf-8")
+        subprocess.run(["git", "add", str(target)], cwd=self.root, check=True)
+        untracked = self.root / "new.py"
+        untracked.write_text("print('new')\n", encoding="utf-8")
+
+        result = GitDiffTool(self.boundary).execute({})
+        self.assertTrue(result.ok)
+        self.assertTrue(result.data["staged"])
+        self.assertTrue(result.data["untracked"])
+        self.assertIn("staged-change", result.data["diff"])
+        self.assertIn("print('new')", result.data["diff"])
 
     def test_git_status_and_log_are_bounded_and_read_only(self) -> None:
         subprocess.run(["git", "init", "--quiet", str(self.root)], check=True)

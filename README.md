@@ -143,6 +143,8 @@ SEECODER_BASE_URL=https://api.deepseek.com
 SEECODER_MODEL=deepseek-v4-flash
 SEECODER_THINKING_MODE=disabled
 SEECODER_API_KEY=replace-with-your-key
+# 单次模型请求最长等待时间（秒），默认 120，可按服务商延迟调整
+SEECODER_MODEL_TIMEOUT_S=120
 ```
 
 程序只从进程环境或未入库的 dotenv 文件读取密钥。不会打印 API key 或请求头，`.env`、trace、录屏和虚拟环境已被 `.gitignore` 排除。
@@ -166,11 +168,15 @@ uv run seecoder chat \
 
 可用 `uv run seecoder --help`、`uv run seecoder run --help` 和 `uv run seecoder chat --help` 查看参数。`--resume` 恢复已有快照，`--event-json` 输出桌面端使用的本地 JSONL 事件，`--trace-dir` 指定工作区外的审计目录，`--max-steps` 限制单次循环步数。
 
+桌面端和 CLI 的 `chat` 是长生命周期多轮会话。模型超时或协议错误只结束当前回合，不会销毁会话进程；失败回合会写入可恢复的助手观察，下一条指令仍会沿用同一份快照。桌面端还会对同一会话的重复点击做短时幂等去重，避免一条输入被写入两次。
+
 三种模式的语义如下：
 
 - **Ask**：只读操作可直接执行，写文件、重命名和命令等变更操作会等待用户批准。
 - **Plan**：执行只读检查并返回计划，不执行变更。
 - **Auto Mode**：在本地安全策略允许范围内自动执行，仍受工作区边界、命令白名单和步数上限约束。
+
+每次模型请求都会根据最近一条用户消息注入语言策略：中文提问使用简体中文回答，英文提问使用英文回答，混合输入按主要语言处理；代码、命令、路径和标识符保持原样。
 
 ## 原生 macOS 桌面端
 
@@ -184,15 +190,16 @@ uv run seecoder chat \
 
 桌面端通过本地 `Process` 连接一个持续运行的 `seecoder chat`，因此同一会话可以连续提交多轮任务。当前界面提供：
 
-- Codex 风格的项目/会话层级：新对话先选择本地项目，项目下可创建多个会话，也可从项目菜单新建子会话或重命名项目。
+- Codex 风格的项目/会话层级：新对话先选择本地项目，项目下可创建多个会话，也可从项目菜单新建子会话；项目菜单不提供重命名入口，工作区目录重命名由受边界保护的 `rename_directory` 工具完成。
 - 项目管理菜单：置顶、在 Finder 中显示、项目设置、归档/取消归档；这些操作只更新本机索引，不会删除项目文件。
-- 会话菜单只提供重命名和归档/恢复会话；项目重命名仅保留在项目级菜单，避免对象边界混淆。
+- 会话菜单只提供重命名和归档/恢复会话；项目菜单不提供重命名，目录改名统一交给受边界保护的 `rename_directory` 工具，避免对象边界混淆。
 - 启动时会清理无工作区、无消息的历史“新对话”占位记录，但不会触碰用户实际项目目录。
 - 侧边栏使用无系统滚动条的轻量滚动容器，降低默认控件的塑料感，并保留键盘和触控板滚动。
 - 会话列表、会话重命名、项目打开和新建项目（默认名称“新项目”）。
 - 固定底部输入框、流式 Markdown 消息、模型思考/工具轨迹和停止按钮。
 - 运行状态、审批操作、环境信息、Git 分支与变更统计。
-- 已编辑文件卡片，点击后进入本地 diff 审阅；工具/MCP 注册信息与项目 Skills 状态面板。
+- 已编辑文件卡片，点击后进入本地 diff 审阅；Git 工作区使用真实 diff，非 Git 工作区使用持久化的 Agent 编辑记录和只读当前内容回退，因此不会因缺少 Git 基线而丢失变更提示。
+- 工具/MCP 注册信息与项目 Skills 状态面板。
 - 可调整的会话、内容、审阅三栏布局；关闭窗口后可从本地会话快照恢复。
 
 桌面端不加载远程网页、不使用远程 UI 服务，也不读取或显示 API key。SwiftUI 不可用时，可使用 Tk 兼容端 `./desktop/run_desktop.sh`；Electron 兼容端位于 `desktop/electron/`，更新后需完全退出并重新启动。
@@ -202,12 +209,14 @@ uv run seecoder chat \
 当前工具注册表覆盖常见编程工作流：
 
 - **理解项目**：`list_files`、`find_files`、`read_file`、`search_files`、`search_code`、`project_overview`。
-- **修改文件**：`write_file`、`apply_patch`、`rename_directory`。
+- **修改文件**：`write_file`、`apply_patch`、`delete_file`、`create_directory`、`copy_file`、`move_file`、`rename_directory`。
 - **验证变更**：`run_command`、`git_diff`、`git_status`、`git_log`、`git_show`。
 - **Agent 辅助**：有界的 `spawn_agent`、可失败降级的 `web_search`。
 - **本地 Skills**：`list_skills` 读取 `.seecoder/skills/<name>/SKILL.md`，仅提供项目指引。
 
-`rename_directory` 不调用 shell：重命名当前选定的工作区根目录时传入 `path="."` 和新的单层名称，AgentRunner 会原子地更新后续工具的本地路径，桌面端也会同步所有引用该目录的会话。目标重名、系统保护目录、符号链接和越界路径都会被拒绝。
+`delete_file` 用于清理单个临时文件，不调用 shell，也不能删除目录、符号链接、凭据或项目元数据。`create_directory`、`copy_file` 和 `move_file` 覆盖常见的目录创建、文件复制与文件改名场景，均拒绝越界、符号链接、覆盖既有目标和受保护路径。写入、补丁、删除、复制和移动工具会返回有界的新增/删除行数，供桌面端在没有 Git 基线时持久化展示本轮 Agent 编辑记录。`rename_directory` 不调用 shell：重命名当前选定的工作区根目录时传入 `path="."` 和新的单层名称，AgentRunner 会原子地更新后续工具的本地路径，桌面端也会同步所有引用该目录的会话。目标重名、系统保护目录、符号链接和越界路径都会被拒绝。
+
+受限 `run_command` 使用字面量 argv，不启用 shell，并允许常见项目的验证命令：Python 测试/编译、npm/pnpm/yarn/bun 的 test/lint/build/check 脚本、Cargo test/check/build、Go test/build/vet、Swift test/build、Node `--check` 和 .NET test/build。安装依赖、任意脚本、删除命令和带 shell 元字符的命令仍需显式审批或改用专用工具。
 
 新增工具应实现本地 Tool Protocol，声明名称、描述、参数 schema、只读/变更属性和执行函数，再注册到 `ToolRegistry`。工具不能绕过 `WorkspaceBoundary`、审批策略、命令限制或 trace。当前系统不要求外部 MCP 服务才能运行；桌面端的工具/MCP 面板用于展示本地注册能力和连接状态，外部服务必须由用户显式配置并遵守同一权限边界。
 
@@ -239,14 +248,14 @@ UV_CACHE_DIR=/private/tmp/seecoder-uv-cache \
 (cd desktop/electron && npm test)
 ```
 
-最近一次离线回归基线为 Python 后端 **75/75**，SwiftUI 原生端编译通过；Electron 与 Tk 兼容端分别提供边界和启动测试。真实模型、网络搜索和宿主命令的结果取决于本机配置，不能用离线 fake model 代替声明为端到端验证。
+最近一次离线回归基线为 Python 后端 **94/94**，Electron 端测试全部通过；SwiftUI 原生端源码可通过 Swift parser 检查，完整构建应在与 macOS SDK 匹配的 Xcode 工具链中执行。会话快照采用原子替换并在原生桌面端自动追加 `--resume`，Git 差异同时覆盖 staged、unstaged 与 untracked 文件，ToolRegistry 在本地统一执行 JSON Schema 子集校验和能力分类。真实模型、网络搜索和宿主命令的结果取决于本机配置，不能用离线 fake model 代替声明为端到端验证。
 
 ## CI/CD 流水线
 
 `.github/workflows/ci.yml` 在每次 Pull Request、`main` 推送或手动触发时运行：
 
-- Python 3.12/3.13 锁定依赖、75 项后端回归、Tk 边界测试、编译检查和包构建。
-- Node.js 22.12 的 Electron `npm ci` 与 8 项兼容端测试。
+- Python 3.12/3.13 锁定依赖、94 项后端回归、Tk 边界测试、编译检查和包构建。
+- Node.js 22.12 的 Electron `npm ci` 与 10 项兼容端测试。
 - macOS 14 上的 SwiftUI 构建和品牌资源检查。
 - README 语境审计、`git diff --check`、品牌资产一致性和凭据样式扫描。
 

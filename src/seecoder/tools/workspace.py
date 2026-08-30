@@ -13,6 +13,7 @@ from seecoder.types import ToolResult
 
 
 class FindFilesTool:
+    capability = "read"
     """Find workspace files by a path/name glob without invoking a shell."""
 
     name = "find_files"
@@ -74,6 +75,7 @@ class FindFilesTool:
 
 
 class ProjectOverviewTool:
+    capability = "read"
     """Return a non-content project inventory useful before planning edits."""
 
     name = "project_overview"

@@ -43,8 +43,25 @@ struct ChatMessage: Identifiable, Codable, Hashable {
   init(_ role: Role, _ content: String) { id = UUID(); self.role = role; self.content = content; createdAt = .now }
 }
 
+struct LocalChange: Codable, Hashable {
+  var path: String
+  var added: Int
+  var deleted: Int
+}
+
 struct SessionModel: Identifiable, Codable, Hashable {
-  var id = UUID(); var title = "新对话"; var workspace = ""; var messages: [ChatMessage] = []; var updatedAt = Date.now
+  var id = UUID(); var title = "新对话"; var workspace = ""; var messages: [ChatMessage] = []; var updatedAt = Date.now; var localChanges: [LocalChange] = []
+  init(workspace: String = "") { self.workspace = workspace }
+  enum CodingKeys: String, CodingKey { case id, title, workspace, messages, updatedAt, localChanges }
+  init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+    title = try values.decodeIfPresent(String.self, forKey: .title) ?? "新对话"
+    workspace = try values.decodeIfPresent(String.self, forKey: .workspace) ?? ""
+    messages = try values.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? []
+    updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .now
+    localChanges = try values.decodeIfPresent([LocalChange].self, forKey: .localChanges) ?? []
+  }
 }
 struct DesktopPersistence: Codable {
   let sessions: [SessionModel]
@@ -106,12 +123,24 @@ final class DesktopStore: ObservableObject {
   private var process: Process?
   private var inputPipe: Pipe?
   private var outputBuffer = ""
+  private var stopRequested = false
+  private var lastSubmittedTask: String?
+  private var lastSubmittedAt: Date?
   private let legacyPersistenceKey = "seecoder.swiftui.sessions.v1"
   private let pinnedProjectsKey = "seecoder.swiftui.pinned-projects.v1"
   private let archivedProjectsKey = "seecoder.swiftui.archived-projects.v1"
   private let archivedSessionsKey = "seecoder.swiftui.archived-sessions.v1"
+  private let modeKey = "seecoder.swiftui.mode.v1"
 
-  init() { load(); loadProjectFlags(); loadSessionFlags(); cleanupEmptyPlaceholderSessions(); if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }; save() }
+  init() {
+    load()
+    loadProjectFlags()
+    loadSessionFlags()
+    if let storedMode = UserDefaults.standard.string(forKey: modeKey), ["ask", "plan", "auto"].contains(storedMode) { mode = storedMode }
+    cleanupEmptyPlaceholderSessions()
+    if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }
+    save()
+  }
   var currentIndex: Int? { sessions.firstIndex { $0.id == selectedID } }
   var current: SessionModel? { currentIndex.map { sessions[$0] } }
   var hasWorkspace: Bool { !(current?.workspace ?? "").isEmpty }
@@ -136,6 +165,7 @@ final class DesktopStore: ObservableObject {
   }
 
   func newSession() { openNewConversation() }
+  func persistMode() { guard ["ask", "plan", "auto"].contains(mode) else { mode = "auto"; return }; UserDefaults.standard.set(mode, forKey: modeKey) }
   func openNewConversation() { guard !isRunning else { return }; showNewConversation = true }
   func startSession(in workspace: String) {
     let session = SessionModel(workspace: workspace)
@@ -217,7 +247,7 @@ final class DesktopStore: ObservableObject {
     do { try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false); showCreateWorkspace = false; startSession(in: target.path); activity.insert("已创建新项目 · \(name)", at: 0) }
     catch { workspaceError = "无法创建该文件夹。请确认名称未被占用且目录可写。" }
   }
-  func applyWorkspace(_ path: String, activityText: String) { guard let index = currentIndex else { return }; sessions[index].workspace = path; sessions[index].updatedAt = .now; activity.insert(activityText + " · " + shortPath(path), at: 0); reviewFile = nil; diffLines = []; save() }
+  func applyWorkspace(_ path: String, activityText: String) { guard let index = currentIndex else { return }; if sessions[index].workspace != path { sessions[index].localChanges = [] }; sessions[index].workspace = path; sessions[index].updatedAt = .now; activity.insert(activityText + " · " + shortPath(path), at: 0); reviewFile = nil; diffLines = []; save() }
   func openCreateWorkspace() { workspaceParent = ""; workspaceName = "新项目"; workspaceError = ""; showCreateWorkspace = true }
   func openRenameSession(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; renameText = session.title; renameError = ""; renameKind = .session }
   func openRenameCurrentWorkspace() { guard let session = current else { return }; openRenameWorkspace(session) }
@@ -237,6 +267,11 @@ final class DesktopStore: ObservableObject {
   }
   func send() {
     let task = draft.trimmingCharacters(in: .whitespacesAndNewlines); guard !task.isEmpty, hasWorkspace, !isRunning, let index = currentIndex else { return }
+    // Protect the long-lived stdin protocol from a double click or a
+    // keyboard shortcut delivered immediately after the click. A later,
+    // intentional retry remains available once this short window expires.
+    if lastSubmittedTask == task, let lastSubmittedAt, Date.now.timeIntervalSince(lastSubmittedAt) < 2 { return }
+    lastSubmittedTask = task; lastSubmittedAt = .now
     sessions[index].messages.append(ChatMessage(.user, task)); sessions[index].title = sessions[index].title == "新对话" ? String(task.prefix(24)) : sessions[index].title; sessions[index].updatedAt = .now; draft = ""; isRunning = true; timeline = []; pendingApproval = nil; addTimeline("任务已提交", detail: "正在连接本地 AgentRunner", tone: .running); activity.insert("正在启动本地 AgentRunner", at: 0); save()
     if let process, process.isRunning, let inputPipe {
       do { try inputPipe.fileHandleForWriting.write(contentsOf: Data((task + "\n").utf8)); return }
@@ -246,6 +281,7 @@ final class DesktopStore: ObservableObject {
     let root = projectRootURL()
     let envFile = root.appendingPathComponent(".env")
     guard let invocation = agentInvocation(root: root, workspace: workspace, storage: storage) else {
+      lastSubmittedTask = nil; lastSubmittedAt = nil
       isRunning = false
       append(.system, "无法启动本地 AgentRunner：找不到 uv 或项目虚拟环境中的 Python。请先在项目根目录运行 uv sync。")
       addTimeline("无法启动本地 AgentRunner", detail: "未找到可执行的 uv 或 .venv/bin/python", tone: .failure)
@@ -255,13 +291,33 @@ final class DesktopStore: ObservableObject {
     p.arguments = invocation.arguments + ["--mode", mode]
     p.environment = launchEnvironment(root: root)
     if FileManager.default.fileExists(atPath: envFile.path) { p.arguments = (p.arguments ?? []) + ["--env-file", envFile.path] }
-    let input = Pipe(); let output = Pipe(); let error = Pipe(); p.standardInput = input; p.standardOutput = output; p.standardError = error; process = p; inputPipe = input; outputBuffer = ""
+    let input = Pipe(); let output = Pipe(); let error = Pipe(); p.standardInput = input; p.standardOutput = output; p.standardError = error; process = p; inputPipe = input; outputBuffer = ""; stopRequested = false
     output.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.consume(String(decoding: data, as: UTF8.self)) } }
     error.fileHandleForReading.readabilityHandler = { [weak self] handle in let data = handle.availableData; guard !data.isEmpty else { return }; Task { @MainActor in self?.recordCLIError(String(decoding: data, as: UTF8.self)) } }
-    p.terminationHandler = { [weak self] _ in Task { @MainActor in guard let self else { return }; self.isRunning = false; self.pendingApproval = nil; self.process = nil; self.inputPipe = nil; self.addTimeline("本地 AgentRunner 已结束", detail: "可继续提交下一轮任务", tone: .info); self.save() } }
-    do { try p.run(); try input.fileHandleForWriting.write(contentsOf: Data((task + "\n").utf8)) } catch { isRunning = false; append(.system, "无法启动本地 AgentRunner：\(error.localizedDescription)"); addTimeline("无法启动本地 AgentRunner", detail: invocation.executable.path, tone: .failure) }
+    p.terminationHandler = { [weak self] process in
+      let status = process.terminationStatus
+      let reason = process.terminationReason
+      Task { @MainActor in
+        guard let self else { return }
+        self.isRunning = false
+        self.pendingApproval = nil
+        self.process = nil
+        self.inputPipe = nil
+        let wasStopped = self.stopRequested
+        self.stopRequested = false
+        if status == 0 || wasStopped {
+          self.addTimeline(wasStopped ? "任务已停止" : "本地 AgentRunner 已结束", detail: "可继续提交下一轮任务", tone: wasStopped ? .warning : .info)
+        } else {
+          let reasonText = reason == .uncaughtSignal ? "收到信号 " + String(status) : "退出码 " + String(status)
+          self.addTimeline("本地 AgentRunner 异常退出", detail: reasonText + " · 请检查上方轨迹和配置", tone: .failure)
+          self.activity.insert("本地任务异常退出 · " + reasonText, at: 0)
+        }
+        self.save()
+      }
+    }
+    do { try p.run(); try input.fileHandleForWriting.write(contentsOf: Data((task + "\n").utf8)) } catch { lastSubmittedTask = nil; lastSubmittedAt = nil; isRunning = false; append(.system, "无法启动本地 AgentRunner：\(error.localizedDescription)"); addTimeline("无法启动本地 AgentRunner", detail: invocation.executable.path, tone: .failure) }
   }
-  func stop() { process?.terminate(); pendingApproval = nil; addTimeline("正在停止任务", detail: "已向本地 AgentRunner 发送终止请求", tone: .warning); activity.insert("已请求停止本地任务", at: 0) }
+  func stop() { stopRequested = true; process?.terminate(); pendingApproval = nil; addTimeline("正在停止任务", detail: "已向本地 AgentRunner 发送终止请求", tone: .warning); activity.insert("已请求停止本地任务", at: 0) }
   func decideApproval(_ approved: Bool) {
     guard let inputPipe, isRunning else { return }
     do {
@@ -272,14 +328,26 @@ final class DesktopStore: ObservableObject {
   }
   func inspectDiff(_ file: String) {
     guard let workspace = current?.workspace, !workspace.isEmpty else { return }; reviewFile = file
-    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = ["git", "-C", workspace, "diff", "--no-ext-diff", "--unified=3", "--", file]
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = ["git", "-C", workspace, "diff", "HEAD", "--no-ext-diff", "--no-color", "--unified=3", "--", file]
     let pipe = Pipe(); p.standardOutput = pipe
-    do { try p.run(); p.waitUntilExit(); let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); diffLines = text.split(separator: "\n", omittingEmptySubsequences: false).map { classifyDiff(String($0)) } }
+    do { try p.run(); p.waitUntilExit(); var text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); if text.isEmpty { let absolute = URL(fileURLWithPath: workspace).appendingPathComponent(file).path; text = run("git", ["-C", workspace, "diff", "--no-index", "--no-ext-diff", "--no-color", "--unified=3", "/dev/null", absolute]) }; diffLines = text.isEmpty ? [DiffLine(kind: .context, text: "未检测到可显示的 Git 差异，或该文件已被删除。")] : text.split(separator: "\n", omittingEmptySubsequences: false).map { classifyDiff(String($0)) } }
     catch { diffLines = [DiffLine(kind: .context, text: "无法读取本地 Git 差异。")] }
   }
   func changedFiles() -> [(String, Int, Int)] {
-    guard let workspace = current?.workspace, !workspace.isEmpty else { return [] }; let result = run("git", ["-C", workspace, "diff", "--numstat"])
-    return result.split(separator: "\n").compactMap { row in let pieces = row.split(separator: "\t", maxSplits: 2); guard pieces.count == 3 else { return nil }; return (String(pieces[2]), Int(pieces[0]) ?? 0, Int(pieces[1]) ?? 0) }
+    guard let workspace = current?.workspace, !workspace.isEmpty else { return [] }
+    let tracked = run("git", ["-C", workspace, "diff", "HEAD", "--numstat"])
+    var rows = tracked.split(separator: "\n").compactMap { row -> (String, Int, Int)? in
+      let pieces = row.split(separator: "\t", maxSplits: 2); guard pieces.count == 3 else { return nil }
+      return (String(pieces[2]), Int(pieces[0]) ?? 0, Int(pieces[1]) ?? 0)
+    }
+    let status = run("git", ["-C", workspace, "status", "--porcelain=v1", "--untracked-files=all"])
+    for line in status.split(separator: "\n") where line.hasPrefix("?? ") {
+      let path = String(line.dropFirst(3)); let url = URL(fileURLWithPath: workspace).appendingPathComponent(path)
+      guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+      let additions = content.isEmpty ? 0 : content.split(separator: "\n", omittingEmptySubsequences: false).count - (content.hasSuffix("\n") ? 1 : 0)
+      rows.append((path, additions, 0))
+    }
+    return rows.isEmpty ? (current?.localChanges ?? []).map { ($0.path, $0.added, $0.deleted) } : rows
   }
   private func consume(_ chunk: String) {
     outputBuffer += chunk
@@ -292,7 +360,10 @@ final class DesktopStore: ObservableObject {
   private func handleEvent(_ event: String, data: [String: Any]) {
     switch event {
     case "token": if let text = data["text"] as? String { appendStreaming(text) }
-    case "run_started": addTimeline("本地 AgentRunner 已启动", detail: "模式：\(data["mode"] as? String ?? mode)，最大步数：\(data["max_steps"] ?? "-")", tone: .running)
+    case "reasoning": if let text = data["text"] as? String, !text.isEmpty { addTimeline("模型思考", detail: text, tone: .info) }
+    case "run_started":
+      if let startedMode = data["mode"] as? String, ["ask", "plan", "auto"].contains(startedMode) { mode = startedMode }
+      addTimeline("本地 AgentRunner 已启动", detail: "模式：\(data["mode"] as? String ?? mode)，最大步数：\(data["max_steps"] ?? "-")", tone: .running)
     case "model_request": addTimeline("正在请求模型", detail: "第 \(data["step"] ?? "-") 步：根据当前上下文规划下一步", tone: .running)
     case "tool_dispatch":
       let calls = data["calls"] as? [[String: Any]] ?? []
@@ -302,6 +373,7 @@ final class DesktopStore: ObservableObject {
       let name = data["name"] as? String ?? "unknown"; let ok = data["ok"] as? Bool ?? false
       let purpose = data["purpose"] as? String ?? "本地工具执行完成"
       addTimeline(ok ? "工具成功：\(name)" : "工具失败：\(name)", detail: ok ? purpose : "\(purpose) · \(data["error"] as? String ?? "未知错误")", tone: ok ? .success : .failure)
+      if ok, ["write_file", "apply_patch", "delete_file", "copy_file", "move_file"].contains(name), let result = data["data"] as? [String: Any] { recordLocalChange(name: name, result: result) }
       if ok, name == "rename_directory", let result = data["data"] as? [String: Any], result["workspace_renamed"] as? Bool == true,
          let oldPath = result["old_path"] as? String, let newPath = result["workspace_path"] as? String {
         applyAgentWorkspaceRename(oldPath: oldPath, newPath: newPath)
@@ -315,11 +387,24 @@ final class DesktopStore: ObservableObject {
       pendingApproval = PendingApproval(kind: .plan, title: "执行计划", detail: detail); addTimeline("等待批准", detail: detail, tone: .warning)
     case "context_compacted": addTimeline("上下文已压缩", detail: "为控制上下文预算，已整理较早的对话内容", tone: .info)
     case "usage": addTimeline("用量更新", detail: "累计 tokens：\(data["total_tokens"] ?? "-")", tone: .info)
-    case "run_finished": addTimeline("运行结束", detail: "状态：\(data["state"] ?? "-")，共 \(data["steps"] ?? "-") 步", tone: .success)
+    case "run_finished":
+      let state = data["state"] as? String ?? "unknown"
+      let tone: TimelineEvent.Tone = state == "final" || state == "plan_proposed" ? .success : .failure
+      addTimeline(state == "final" ? "运行结束" : "运行停止", detail: "状态：\(state)，共 \(data["steps"] ?? "-") 步", tone: tone)
     case "configuration_error": let message = data["message"] as? String ?? "配置错误"; addTimeline("无法启动任务", detail: message, tone: .failure); append(.system, message); isRunning = false
     case "turn_outcome":
+      let state = data["state"] as? String ?? "unknown"
       if let final = data["final_text"] as? String, !final.isEmpty, current?.messages.last?.content != final { append(.agent, final) }
-      isRunning = false; pendingApproval = nil; addTimeline("任务完成", detail: "状态：\(data["state"] ?? "-")", tone: .success); activity.insert("任务完成", at: 0)
+      if state == "plan_proposed" {
+        addTimeline("计划已生成", detail: "等待批准后执行计划", tone: .warning)
+      } else {
+        isRunning = false; pendingApproval = nil
+        let terminalTone: TimelineEvent.Tone = state == "final" ? .success : .failure
+        let recoverable = data["recoverable"] as? Bool ?? ["failed_model", "failed_protocol", "stop_context_budget"].contains(state)
+        let detail = recoverable && state != "final" ? "状态：\(state) · 上一轮已保留，可继续发送" : "状态：\(state)"
+        addTimeline(state == "final" ? "任务完成" : "任务结束", detail: detail, tone: terminalTone)
+        activity.insert(state == "final" ? "任务完成" : "任务结束 · \(state)", at: 0)
+      }
     default: break
     }
   }
@@ -327,6 +412,26 @@ final class DesktopStore: ObservableObject {
   private func recordCLIError(_ text: String) { let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines); guard !cleaned.isEmpty else { return }; activity.insert("CLI: " + cleaned, at: 0); addTimeline("本地进程提示", detail: cleaned, tone: .info) }
   private func appendStreaming(_ text: String) { guard let index = currentIndex else { return }; if sessions[index].messages.last?.role == .agent { sessions[index].messages[sessions[index].messages.count - 1] = ChatMessage(.agent, sessions[index].messages.last!.content + text) } else { sessions[index].messages.append(ChatMessage(.agent, text)) } }
   private func append(_ role: ChatMessage.Role, _ text: String) { guard let index = currentIndex else { return }; sessions[index].messages.append(ChatMessage(role, text)); save() }
+  private func recordLocalChange(name: String, result: [String: Any]) {
+    guard let index = currentIndex else { return }
+    var paths: [String] = []
+    if let path = result["path"] as? String, path != "." { paths.append(path) }
+    if let destination = result["destination"] as? String { paths.append(destination) }
+    guard !paths.isEmpty else { return }
+    let added = (result["added_lines"] as? NSNumber)?.intValue ?? 0
+    let deleted = (result["deleted_lines"] as? NSNumber)?.intValue ?? 0
+    objectWillChange.send()
+    for path in paths {
+      if let existing = sessions[index].localChanges.firstIndex(where: { $0.path == path }) {
+        sessions[index].localChanges[existing].added = max(sessions[index].localChanges[existing].added, added)
+        sessions[index].localChanges[existing].deleted = max(sessions[index].localChanges[existing].deleted, deleted)
+      } else {
+        sessions[index].localChanges.append(LocalChange(path: path, added: added, deleted: deleted))
+      }
+    }
+    sessions[index].updatedAt = .now
+    save()
+  }
   private func applyAgentWorkspaceRename(oldPath: String, newPath: String) {
     let oldURL = URL(fileURLWithPath: oldPath).standardizedFileURL
     let newURL = URL(fileURLWithPath: newPath).standardizedFileURL
@@ -351,11 +456,15 @@ final class DesktopStore: ObservableObject {
     let inheritedPath = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").map { String($0) + "/uv" } ?? []
     let uvCandidates = ([configured, "/opt/homebrew/bin/uv", "/usr/local/bin/uv", "\(home)/.local/bin/uv", "\(home)/.cargo/bin/uv"] + inheritedPath).compactMap { $0 }.map(URL.init(fileURLWithPath:))
     if let uv = uvCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
-      return (uv, ["run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage])
+      var arguments = ["run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage]
+      if FileManager.default.fileExists(atPath: storage) { arguments.append(contentsOf: ["--resume", storage]) }
+      return (uv, arguments)
     }
     let pythonCandidates = [root.appendingPathComponent(".venv/bin/python"), root.appendingPathComponent(".venv/bin/python3"), URL(fileURLWithPath: "/opt/homebrew/opt/python@3.12/bin/python3.12"), URL(fileURLWithPath: "/opt/homebrew/bin/python3"), URL(fileURLWithPath: "/usr/local/bin/python3")]
     if let python = pythonCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
-      return (python, ["-m", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage])
+      var arguments = ["-m", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", storage]
+      if FileManager.default.fileExists(atPath: storage) { arguments.append(contentsOf: ["--resume", storage]) }
+      return (python, arguments)
     }
     return nil
   }
@@ -395,6 +504,8 @@ final class DesktopStore: ObservableObject {
     let snapshot = DesktopPersistence(sessions: sessions, selectedID: selectedID)
     if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: persistenceURL, options: .atomic) }
     saveProjectFlags()
+    saveSessionFlags()
+    UserDefaults.standard.set(mode, forKey: modeKey)
   }
   private func loadProjectFlags() {
     if let paths = UserDefaults.standard.array(forKey: pinnedProjectsKey) as? [String] { pinnedProjects = Set(paths) }
@@ -536,7 +647,6 @@ private struct ProjectSection: View {
             Button(project.isPinned ? "取消置顶项目" : "置顶项目") { store.togglePinnedProject(project) }
             Button("在 Finder 中显示") { store.showProjectInFinder(project) }
             Button("项目设置") { store.openProjectSettings(project) }
-            Button("重命名项目") { if let session = project.sessions.first { store.openRenameWorkspace(session) } }
             Divider()
             Button(project.isArchived ? "取消归档项目" : "归档项目") { store.toggleArchivedProject(project) }
             Button("从项目列表移除") { store.detachProject(project) }
@@ -613,8 +723,19 @@ struct MarkdownMessage: View {
     else if trimmed.hasPrefix("### ") { Text(attributed(String(trimmed.dropFirst(4)))).font(.headline).foregroundStyle(Color.ink) }
     else if trimmed.hasPrefix("## ") { Text(attributed(String(trimmed.dropFirst(3)))).font(.title3.weight(.bold)).foregroundStyle(Color.ink) }
     else if trimmed.hasPrefix("# ") { Text(attributed(String(trimmed.dropFirst(2)))).font(.title2.weight(.bold)).foregroundStyle(Color.ink) }
-    else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") { HStack(alignment: .firstTextBaseline, spacing: 7) { Text("•").foregroundStyle(Color.brandBlue); Text(attributed(String(trimmed.dropFirst(2)))).foregroundStyle(Color.ink) } }
+    else if let numbered = orderedListParts(trimmed) {
+      HStack(alignment: .firstTextBaseline, spacing: 7) { Text("\(numbered.0).").foregroundStyle(Color.brandBlue).fontWeight(.semibold); Text(attributed(numbered.1)).foregroundStyle(Color.ink) }
+    }
+    else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") { HStack(alignment: .firstTextBaseline, spacing: 7) { Text("•").foregroundStyle(Color.brandBlue); Text(attributed(String(trimmed.dropFirst(2)))).foregroundStyle(Color.ink) } }
     else { Text(attributed(line)).foregroundStyle(Color.ink) }
+  }
+  private func orderedListParts(_ line: String) -> (Int, String)? {
+    guard let dot = line.firstIndex(of: "."), dot > line.startIndex,
+          let number = Int(line[..<dot]) else { return nil }
+    let contentStart = line.index(after: dot)
+    guard contentStart < line.endIndex, line[contentStart] == " " else { return nil }
+    let content = line[line.index(after: contentStart)...].trimmingCharacters(in: .whitespaces)
+    return content.isEmpty ? nil : (number, String(content))
   }
   private func attributed(_ text: String) -> AttributedString { (try? AttributedString(markdown: text)) ?? AttributedString(text) }
 }
@@ -650,7 +771,7 @@ struct ExecutionTimeline: View {
   private func icon(_ tone: TimelineEvent.Tone) -> String { switch tone { case .running: "arrow.triangle.2.circlepath"; case .success: "checkmark.circle.fill"; case .warning: "exclamationmark.circle.fill"; case .failure: "xmark.octagon.fill"; case .info: "info.circle.fill" } }
   private func color(_ tone: TimelineEvent.Tone) -> Color { switch tone { case .running: .brandBlue; case .success: .brandGreen; case .warning: .brandAmber; case .failure: .red; case .info: .muted } }
 }
-struct ChangeSummary: View { @EnvironmentObject var store: DesktopStore; var body: some View { let files = store.changedFiles(); if !files.isEmpty { VStack(alignment: .leading, spacing: 8) { Text("已编辑 \(files.count) 个文件").font(.headline); ForEach(files, id: \.0) { file in Button { store.inspectDiff(file.0) } label: { HStack { Text(file.0).font(.system(.caption, design: .monospaced)); Spacer(); Text("+\(file.1) −\(file.2)").font(.caption).foregroundStyle(.secondary) }.padding(.vertical, 5) }.buttonStyle(.plain) } }.padding(15).frame(maxWidth: 760).background(Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) } } }
+struct ChangeSummary: View { @EnvironmentObject var store: DesktopStore; var body: some View { let files = store.changedFiles(); if !files.isEmpty { let added = files.reduce(0) { $0 + $1.1 }; let deleted = files.reduce(0) { $0 + $1.2 }; VStack(alignment: .leading, spacing: 8) { HStack { Text("已编辑 \(files.count) 个文件").font(.headline); Spacer(); Text("+\(added) −\(deleted)").font(.caption).foregroundStyle(.secondary) }; if (store.current?.localChanges.count ?? 0) > 0 { Text("本轮 Agent 编辑记录（工作区未检测到 Git 基线时仍可用）").font(.caption2).foregroundStyle(Color.muted) }; ForEach(files, id: \.0) { file in Button { store.inspectDiff(file.0) } label: { HStack { Text(file.0).font(.system(.caption, design: .monospaced)); Spacer(); Text("+\(file.1) −\(file.2)").font(.caption).foregroundStyle(.secondary) }.padding(.vertical, 5) }.buttonStyle(.plain) } }.padding(15).frame(maxWidth: 760).background(Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) } } }
 struct Composer: View {
     @EnvironmentObject var store: DesktopStore
     @FocusState private var isFocused: Bool
@@ -664,6 +785,8 @@ struct Composer: View {
                         .foregroundStyle(Color.ink)
                         .scrollContentBackground(.hidden)
                         .background(Color.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 6)
                         .focused($isFocused)
                         .disabled(store.isRunning)
 
@@ -671,8 +794,8 @@ struct Composer: View {
                         Text(store.hasWorkspace ? "描述一个真实的编程任务…" : "可先描述任务，选择工作区后即可发送…")
                             .font(.system(size: 14))
                             .foregroundStyle(Color.muted)
-                            .padding(.top, 8)
-                            .padding(.leading, 5)
+                            .padding(.top, 14)
+                            .padding(.leading, 12)
                             .allowsHitTesting(false)
                     }
                 }
@@ -691,6 +814,7 @@ struct Composer: View {
                 }
                 .labelsHidden()
                 .frame(width: 112)
+                .onChange(of: store.mode) { _, _ in store.persistMode() }
                 Text(store.hasWorkspace ? "本地 · 受限执行" : "选择工作区后发送")
                     .font(.caption)
                     .foregroundStyle(Color.muted)
@@ -705,6 +829,8 @@ struct Composer: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
         .padding(.bottom, 12)
+        .onAppear { if store.hasWorkspace && !store.isRunning { isFocused = true } }
+        .onChange(of: store.isRunning) { _, running in if !running && store.hasWorkspace { isFocused = true } }
     }
 }
 
@@ -807,6 +933,10 @@ private struct ToolManagerPanel: View {
         ("git_log", "查看有限本地提交历史", "只读"),
         ("git_show", "查看单次提交摘要", "只读"),
         ("list_skills", "查看本地 Skill 包", "只读"),
+        ("delete_file", "安全删除单个临时文件", "受策略控制"),
+        ("create_directory", "创建工作区目录", "受策略控制"),
+        ("copy_file", "复制工作区文件", "受策略控制"),
+        ("move_file", "移动或重命名文件", "受策略控制"),
         ("rename_directory", "重命名工作区内代码目录", "受策略控制"),
         ("write_file", "在工作区内原子写入", "受策略控制"),
         ("apply_patch", "精确修改工作区文件", "受策略控制"),
@@ -932,7 +1062,7 @@ struct ProjectSettingsSheet: View {
           Text(project.name).font(.headline).foregroundStyle(Color.ink)
           Label(project.workspace, systemImage: "externaldrive").font(.caption.monospaced()).foregroundStyle(Color.muted).lineLimit(2)
           Divider()
-          Label("(project.sessions.count) 个会话", systemImage: "bubble.left.and.bubble.right").font(.subheadline).foregroundStyle(Color.muted)
+          Label("\(project.sessions.count) 个会话", systemImage: "bubble.left.and.bubble.right").font(.subheadline).foregroundStyle(Color.muted)
           Label(project.isPinned ? "已置顶" : "未置顶", systemImage: project.isPinned ? "pin.fill" : "pin").font(.subheadline).foregroundStyle(Color.muted)
           Label(project.isArchived ? "已归档" : "正常使用中", systemImage: project.isArchived ? "archivebox" : "checkmark.circle").font(.subheadline).foregroundStyle(project.isArchived ? Color.muted : Color.brandGreen)
         }

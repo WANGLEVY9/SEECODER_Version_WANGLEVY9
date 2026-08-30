@@ -54,6 +54,10 @@ class Settings:
     max_steps: int = 16
     max_consecutive_tool_errors: int = 4
     model_retries: int = 3
+    # Keep provider calls bounded so a stalled endpoint cannot leave the
+    # desktop chat process looking frozen forever. Providers may override it
+    # with SEECODER_MODEL_TIMEOUT_S.
+    model_timeout_s: float = 120.0
     context_char_budget: int = 45_000
     command_timeout_s: int = 30
     command_max_timeout_s: int = 120
@@ -91,6 +95,13 @@ class Settings:
         if not 1 <= configured_max_steps <= 100:
             raise ConfigError("SEECODER_MAX_STEPS must be between 1 and 100")
 
+        try:
+            configured_model_timeout = float(value("SEECODER_MODEL_TIMEOUT_S", "120") or "120")
+        except ValueError as error:
+            raise ConfigError("SEECODER_MODEL_TIMEOUT_S must be a number") from error
+        if not 5 <= configured_model_timeout <= 900:
+            raise ConfigError("SEECODER_MODEL_TIMEOUT_S must be between 5 and 900 seconds")
+
         base_url = value("SEECODER_BASE_URL", "https://api.openai.com/v1")
         if not base_url or not base_url.startswith(("https://", "http://")):
             raise ConfigError("SEECODER_BASE_URL must be an HTTP(S) URL")
@@ -119,6 +130,7 @@ class Settings:
             model=model,
             base_url=base_url.rstrip("/"),
             max_steps=configured_max_steps,
+            model_timeout_s=configured_model_timeout,
             allow_dangerous_commands=allow_dangerous_commands,
             execution_mode=configured_execution_mode,
             thinking_mode=thinking_mode,

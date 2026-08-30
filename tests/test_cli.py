@@ -9,10 +9,18 @@ from unittest.mock import patch
 
 import json
 
-from seecoder.cli import _is_inside, main
+from seecoder.cli import _is_inside, _token_json_printer, main
+from seecoder.types import StreamEvent
 
 
 class CliSafetyTests(unittest.TestCase):
+    def test_stream_printer_separates_content_and_reasoning_events(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            _token_json_printer(StreamEvent(kind="content_delta", text="hello"))
+            _token_json_printer(StreamEvent(kind="reasoning_delta", text="inspect first"))
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([event["event"] for event in events], ["token", "reasoning"])
     def test_config_and_trace_paths_are_detected_inside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary) / "workspace"

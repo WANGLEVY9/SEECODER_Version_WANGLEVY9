@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from seecoder.config import Settings
+from seecoder.model_client import ModelClientError
 from seecoder.session import Conversation
 from seecoder.types import Mode, ModelResponse, RunState, ToolCall
 
@@ -22,6 +23,21 @@ class ScriptedModel:
     def complete(self, messages: list[Any], tools: list[dict[str, Any]]) -> ModelResponse:
         self.requests.append(messages)
         return self.responses.pop(0)
+
+
+class FailOnceModel:
+    """Simulate a provider timeout followed by a healthy follow-up turn."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+        self.requests: list[list[Any]] = []
+
+    def complete(self, messages: list[Any], tools: list[dict[str, Any]]) -> ModelResponse:  # noqa: ARG002
+        self.attempts += 1
+        self.requests.append(messages)
+        if self.attempts == 1:
+            raise ModelClientError("request timed out", retryable=False)
+        return ModelResponse("Recovered on the follow-up turn.")
 
 
 def call(identifier: str, name: str, arguments: dict[str, Any]) -> ToolCall:
@@ -52,6 +68,21 @@ class ConversationTests(unittest.TestCase):
         # Two turns share one conversation: system + 2 user + 2 assistant.
         self.assertEqual(len(conversation.messages), 5)
         self.assertEqual(conversation.total_steps, 2)
+
+    def test_follow_up_after_model_failure_is_recoverable(self) -> None:
+        model = FailOnceModel()
+        conversation = Conversation(settings=self.settings, model_client=model, workspace=self.workspace)
+
+        failed = conversation.start("Create a test program")
+        self.assertEqual(failed.state, RunState.FAILED_MODEL)
+        self.assertEqual(conversation.messages[-1].role, "assistant")
+
+        recovered = conversation.send("Please retry that task")
+        self.assertEqual(recovered.state, RunState.FINAL)
+        self.assertEqual(model.attempts, 2)
+        # The second provider request has a valid assistant observation between
+        # the failed user turn and the new follow-up user turn.
+        self.assertEqual([message.role for message in model.requests[-1]], ["system", "user", "assistant", "user"])
 
     def test_plan_approval_executes_previously_proposed_mutation(self) -> None:
         model = ScriptedModel(
@@ -92,6 +123,25 @@ class ConversationTests(unittest.TestCase):
         replay.responses.append(ModelResponse("Third answer."))
         outcome = loaded.send("One more")
         self.assertEqual(outcome.state, RunState.FINAL)
+
+    def test_load_preserves_streaming_and_compaction_hooks(self) -> None:
+        model = ScriptedModel([ModelResponse("First answer.")])
+        conversation = Conversation(settings=self.settings, model_client=model, workspace=self.workspace)
+        conversation.start("Task one")
+        path = self.workspace / "session.json"
+        conversation.save(path)
+        stream_sink = lambda _event: None
+        compactor = lambda _messages: "summary"
+        loaded = Conversation.load(
+            path,
+            settings=self.settings,
+            model_client=ScriptedModel([]),
+            workspace=self.workspace,
+            stream_sink=stream_sink,
+            compactor=compactor,
+        )
+        self.assertIs(loaded.runner.stream_sink, stream_sink)
+        self.assertIs(loaded.runner.compactor, compactor)
 
     def test_workspace_root_rename_is_persisted_for_resume(self) -> None:
         root = self.workspace / "unnamed"

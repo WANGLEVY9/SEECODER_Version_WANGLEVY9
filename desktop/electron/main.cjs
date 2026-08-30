@@ -129,6 +129,35 @@ async function gitOutput(workspace, args) {
   }
 }
 
+async function gitOutputAllowFailure(workspace, args) {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", workspace, ...args], {
+      timeout: 3_000,
+      maxBuffer: 512 * 1024,
+      windowsHide: true,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+    });
+    return stdout;
+  } catch (error) {
+    return typeof error?.stdout === "string" ? error.stdout : null;
+  }
+}
+
+async function countUntrackedLines(workspace, listing) {
+  const counts = {};
+  for (const rawPath of String(listing || "").split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+    const relative = safeWorkspaceRelativePath(workspace, rawPath);
+    if (!relative) continue;
+    try {
+      const content = await fs.readFile(path.join(workspace, relative), "utf8");
+      counts[relative] = { added: content ? content.split(/\r?\n/).length - (content.endsWith("\n") ? 1 : 0) : 0, deleted: 0 };
+    } catch {
+      // Binary or unreadable files still appear in the file list with zero counts.
+    }
+  }
+  return counts;
+}
+
 ipcMain.handle("seecoder:inspect-environment", async (_event, rawWorkspace) => {
   if (typeof rawWorkspace !== "string" || !rawWorkspace.trim()) return { isRepository: false, files: [] };
   const workspace = path.resolve(rawWorkspace);
@@ -137,13 +166,19 @@ ipcMain.handle("seecoder:inspect-environment", async (_event, rawWorkspace) => {
   } catch {
     return { isRepository: false, files: [] };
   }
-  const [branch, nameStatus, numstat] = await Promise.all([
+  const [repository, branch, headNameStatus, headNumstat, untracked] = await Promise.all([
+    gitOutput(workspace, ["rev-parse", "--is-inside-work-tree"]),
     gitOutput(workspace, ["branch", "--show-current"]),
-    gitOutput(workspace, ["diff", "--name-status"]),
-    gitOutput(workspace, ["diff", "--numstat"]),
+    gitOutput(workspace, ["diff", "HEAD", "--name-status"]),
+    gitOutput(workspace, ["diff", "HEAD", "--numstat"]),
+    gitOutput(workspace, ["ls-files", "--others", "--exclude-standard"]),
   ]);
-  if (branch === null || nameStatus === null || numstat === null) return { isRepository: false, files: [] };
-  return parseGitEnvironment({ branch, nameStatus, numstat });
+  if (repository?.trim() !== "true" || untracked === null) return { isRepository: false, files: [] };
+  // An unborn repository has no HEAD yet, and a detached repository has an
+  // empty branch name. In both cases it is still a real Git workspace.
+  const nameStatus = headNameStatus ?? await gitOutput(workspace, ["diff", "--name-status"]) ?? "";
+  const numstat = headNumstat ?? await gitOutput(workspace, ["diff", "--numstat"]) ?? "";
+  return parseGitEnvironment({ isRepository: true, branch, nameStatus, numstat, untracked, untrackedCounts: await countUntrackedLines(workspace, untracked) });
 });
 
 function safeWorkspaceRelativePath(workspace, rawPath) {
@@ -166,8 +201,21 @@ ipcMain.handle("seecoder:read-diff", async (_event, payload) => {
   }
   const relativePath = safeWorkspaceRelativePath(workspace, payload?.path);
   if (!relativePath) return { ok: false, error: "只允许读取工作区内的相对文件路径。" };
-  const diff = await gitOutput(workspace, ["diff", "--no-ext-diff", "--unified=3", "--", relativePath]);
-  if (diff === null) return { ok: false, error: "无法读取该工作区的本地 Git 差异。" };
+  let diff = await gitOutput(workspace, ["diff", "HEAD", "--no-ext-diff", "--unified=3", "--", relativePath]);
+  if (diff === null) {
+    // Non-Git workspaces still need an auditable review surface.  There is no
+    // repository baseline, so expose the current UTF-8 file as a synthetic
+    // add-only diff and label it as such in the renderer.
+    try {
+      const content = await fs.readFile(path.join(workspace, relativePath), "utf8");
+      const lines = content.split(/\r?\n/);
+      if (lines.at(-1) === "") lines.pop();
+      diff = `--- /dev/null\n+++ ${relativePath}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join("\n")}`;
+    } catch {
+      return { ok: false, error: "无法读取该文件的本地内容。" };
+    }
+  }
+  if (!diff.trim()) diff = await gitOutputAllowFailure(workspace, ["diff", "--no-index", "--no-ext-diff", "--unified=3", "/dev/null", relativePath]) || "";
   return { ok: true, path: relativePath, lines: parseUnifiedDiff(diff) };
 });
 
@@ -192,7 +240,16 @@ ipcMain.handle("seecoder:start-chat", async (_event, payload) => {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
-  activeChats.set(sessionId, { child, workspace: payload.workspace, mode: payload.mode });
+  activeChats.set(sessionId, {
+    child,
+    workspace: payload.workspace,
+    mode: payload.mode,
+    // A renderer click and its keyboard shortcut may arrive as two IPC
+    // messages. Remember the last frame briefly so the same logical task is
+    // never written twice to the long-lived chat process.
+    lastTask: null,
+    lastTaskAt: 0,
+  });
   send("seecoder:runner-event", { event: "chat_started", data: { workspace: payload.workspace }, sessionId });
   consumeLines(child.stdout, "seecoder:runner-event", sessionId);
   consumeLines(child.stderr, "seecoder:runner-stderr", sessionId);
@@ -208,9 +265,21 @@ ipcMain.handle("seecoder:send-chat-task", (_event, payload) => {
   const sessionId = safeSessionId(payload?.sessionId);
   const task = typeof payload?.task === "string" ? payload.task.trim() : "";
   const active = sessionId ? activeChats.get(sessionId) : null;
-  if (!active || !active.child.stdin || !task) return { handled: false };
-  active.child.stdin.write(task + "\n");
-  return { handled: true };
+  if (!active || !active.child.stdin || active.child.stdin.destroyed || active.child.stdin.writableEnded || !task) {
+    return { handled: false, error: "本地会话尚未准备好接收任务。" };
+  }
+  const now = Date.now();
+  if (active.lastTask === task && now - active.lastTaskAt < 2_000) {
+    return { handled: true, deduplicated: true };
+  }
+  try {
+    active.child.stdin.write(task + "\n");
+    active.lastTask = task;
+    active.lastTaskAt = now;
+    return { handled: true };
+  } catch (error) {
+    return { handled: false, error: error?.message || "无法写入本地会话。" };
+  }
 });
 
 ipcMain.handle("seecoder:approve", (_event, payload) => {

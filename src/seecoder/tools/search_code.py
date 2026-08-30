@@ -37,6 +37,7 @@ def _bounded_int(arguments: dict[str, Any], name: str, *, default: int, minimum:
 
 
 class SearchCodeTool:
+    capability = "read"
     """Return workspace symbol definitions that match a query, bounded and deterministic."""
 
     name = "search_code"

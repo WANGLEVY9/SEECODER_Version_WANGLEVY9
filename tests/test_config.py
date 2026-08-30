@@ -51,3 +51,13 @@ class ConfigTests(unittest.TestCase):
             )
             with self.assertRaises(ConfigError):
                 Settings.from_environment(env_file=path)
+
+    def test_model_timeout_is_configurable_and_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / ".env"
+            path.write_text(
+                "SEECODER_API_KEY=file-key\nSEECODER_MODEL=file-model\nSEECODER_MODEL_TIMEOUT_S=45\n",
+                encoding="utf-8",
+            )
+            settings = Settings.from_environment(env_file=path)
+        self.assertEqual(settings.model_timeout_s, 45.0)

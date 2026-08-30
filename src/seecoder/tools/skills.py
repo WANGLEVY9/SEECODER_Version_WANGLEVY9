@@ -10,6 +10,7 @@ from seecoder.types import ToolResult
 
 
 class ListSkillsTool:
+    capability = "read"
     """Show optional local skills that are already bounded by the skill loader."""
 
     name = "list_skills"

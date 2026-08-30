@@ -6,8 +6,7 @@ function buildBackendInvocation(uv, task, workspace, mode) {
   if (typeof workspace !== "string" || !workspace.trim()) throw new Error("请先选择一个已存在的工作区。");
   const allowed = { auto: "auto", plan: "plan", ask: "ask" };
   const selected = allowed[mode] || "auto";
-  const args = ["run", "seecoder", "run", task.trim(), "--workspace", workspace, "--event-json"];
-  if (selected !== "auto") args.push("--mode", selected);
+  const args = ["run", "seecoder", "run", task.trim(), "--workspace", workspace, "--event-json", "--mode", selected];
   return { command: uv, args };
 }
 
@@ -17,9 +16,8 @@ function buildChatInvocation(uv, workspace, mode, sessionPath, resume) {
   if (typeof sessionPath !== "string" || !sessionPath.trim()) throw new Error("会话存储路径不能为空。");
   const allowed = { auto: "auto", plan: "plan", ask: "ask" };
   const selected = allowed[mode] || "auto";
-  const args = ["run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", sessionPath];
+  const args = ["run", "seecoder", "chat", "--workspace", workspace, "--event-json", "--save", sessionPath, "--mode", selected];
   if (resume) args.push("--resume", sessionPath);
-  if (selected !== "auto") args.push("--mode", selected);
   return { command: uv, args };
 }
 
@@ -35,7 +33,7 @@ function parseEventLine(line) {
   }
 }
 
-function parseGitEnvironment({ branch = "", nameStatus = "", numstat = "" }) {
+function parseGitEnvironment({ branch = "", nameStatus = "", numstat = "", untracked = "", untrackedCounts = {}, isRepository = null }) {
   const counts = new Map();
   let added = 0;
   let deleted = 0;
@@ -56,7 +54,14 @@ function parseGitEnvironment({ branch = "", nameStatus = "", numstat = "" }) {
     const count = counts.get(file) || { added: 0, deleted: 0 };
     files.push({ path: file, status: rawStatus, ...count });
   }
-  return { isRepository: Boolean(branch), branch: branch.trim(), added, deleted, files };
+  for (const file of String(untracked).split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+    if (files.some((entry) => entry.path === file)) continue;
+    const count = untrackedCounts[file] || { added: 0, deleted: 0 };
+    files.push({ path: file, status: "??", ...count });
+    added += count.added;
+    deleted += count.deleted;
+  }
+  return { isRepository: isRepository === null ? Boolean(branch) : Boolean(isRepository), branch: branch.trim(), added, deleted, files };
 }
 
 function parseUnifiedDiff(diff = "") {

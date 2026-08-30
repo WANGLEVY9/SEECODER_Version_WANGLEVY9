@@ -12,10 +12,11 @@ from seecoder.types import ToolResult
 
 
 class GitDiffTool:
+    capability = "read"
     """Expose bounded local change information without allowing Git mutations."""
 
     name = "git_diff"
-    description = "Show bounded, read-only Git status and unstaged diff for a workspace path."
+    description = "Show bounded, read-only Git status plus staged, unstaged, and untracked diff for a workspace path."
     parameters: dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -51,18 +52,39 @@ class GitDiffTool:
             return ToolResult.failure("NotGitRepository", "The selected workspace is not inside a Git work tree")
 
         try:
-            status = self._run(["status", "--short", "--", relative])
-            diff = self._run(["diff", "--no-ext-diff", "--no-color", "--", relative])
+            status = self._run(["status", "--short", "--untracked-files=all", "--", relative])
+            unstaged = self._run(["diff", "--no-ext-diff", "--no-color", "--", relative])
+            staged = self._run(["diff", "--cached", "--no-ext-diff", "--no-color", "--", relative])
         except subprocess.TimeoutExpired:
             return ToolResult.failure("GitTimeout", "Git diff exceeded the 10-second limit")
-        if status.returncode != 0 or diff.returncode != 0:
-            message = (status.stderr or diff.stderr).strip() or "Git could not inspect the selected path"
+        if status.returncode != 0 or unstaged.returncode != 0 or staged.returncode != 0:
+            message = (status.stderr or unstaged.stderr or staged.stderr).strip() or "Git could not inspect the selected path"
             return ToolResult.failure("GitError", message)
 
         rendered_status = status.stdout.strip()
-        rendered_diff, truncated = _truncate(diff.stdout, max_chars)
+        diff_parts = [part for part in (staged.stdout, unstaged.stdout) if part]
+        try:
+            untracked = self._run(["ls-files", "--others", "--exclude-standard", "--", relative])
+        except subprocess.TimeoutExpired:
+            return ToolResult.failure("GitTimeout", "Git status exceeded the 10-second limit")
+        if untracked.returncode == 0:
+            for raw in untracked.stdout.splitlines():
+                path = raw.strip()
+                if not path:
+                    continue
+                candidate = self.boundary.resolve(path)
+                if not candidate.is_file():
+                    continue
+                try:
+                    created = self._run(["diff", "--no-index", "--no-ext-diff", "--no-color", "--unified=3", "/dev/null", path])
+                except subprocess.TimeoutExpired:
+                    return ToolResult.failure("GitTimeout", "Git diff exceeded the 10-second limit")
+                # `git diff --no-index` returns 1 when files differ, which is expected.
+                if created.returncode in (0, 1):
+                    diff_parts.append(created.stdout)
+        rendered_diff, truncated = _truncate("\n".join(part.rstrip("\n") for part in diff_parts if part), max_chars)
         return ToolResult.success(
-            {"path": relative, "status": rendered_status, "diff": rendered_diff},
+            {"path": relative, "status": rendered_status, "diff": rendered_diff, "staged": bool(staged.stdout), "untracked": bool(untracked.stdout.strip())},
             meta={"truncated": truncated},
         )
 

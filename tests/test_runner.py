@@ -141,6 +141,51 @@ class AgentRunnerTests(unittest.TestCase):
         outcome = runner.run("Do something")
         self.assertEqual(outcome.state, RunState.STOP_TOOL_ERROR_LIMIT)
 
+    def test_same_failing_call_is_stopped_before_wasting_more_steps(self) -> None:
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("one", "run_command", {"argv": ["rm", "temporary.py"]}),)),
+                ModelResponse(None, (call("two", "run_command", {"argv": ["rm", "temporary.py"]}),)),
+                # This response must never be requested after the duplicate failure.
+                ModelResponse("This should not be reached."),
+            ]
+        )
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(max_consecutive_tool_errors=8), model_client=model, workspace=self.workspace
+        )
+        outcome = runner.run("Clean up the temporary test file")
+        self.assertEqual(outcome.state, RunState.STOP_TOOL_ERROR_LIMIT)
+        self.assertIn("same failing call", outcome.final_text)
+        self.assertEqual(len(model.requests), 2)
+
+    def test_agent_can_clean_up_a_temporary_file_without_shell_rm(self) -> None:
+        temporary = self.workspace / "temporary.py"
+        temporary.write_text("print('temporary')\n", encoding="utf-8")
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("delete", "delete_file", {"path": "temporary.py"}),)),
+                ModelResponse("Created and cleaned up the temporary test file."),
+            ]
+        )
+        runner = AgentRunner.for_workspace(settings=self._settings(), model_client=model, workspace=self.workspace)
+        outcome = runner.run("Clean up the temporary test file")
+        self.assertEqual(outcome.state, RunState.FINAL)
+        self.assertFalse(temporary.exists())
+
+    def test_success_resets_consecutive_tool_error_budget(self) -> None:
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("one", "unknown", {}),)),
+                ModelResponse(None, (call("read", "list_files", {"path": "."}),)),
+                ModelResponse("Recovered after inspecting the tool errors."),
+            ]
+        )
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(max_consecutive_tool_errors=2), model_client=model, workspace=self.workspace
+        )
+        outcome = runner.run("Do something")
+        self.assertEqual(outcome.state, RunState.FINAL)
+
     def test_max_steps_is_a_named_stop_condition(self) -> None:
         response = ModelResponse(None, (call("list", "list_files", {"path": "."}),))
         runner = AgentRunner.for_workspace(

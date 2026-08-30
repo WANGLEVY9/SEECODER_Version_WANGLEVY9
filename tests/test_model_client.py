@@ -82,6 +82,26 @@ class ModelClientTests(unittest.TestCase):
         request = _chat_completion_request(Settings(api_key="test", model="generic"), [], [])
         self.assertNotIn("extra_body", request)
 
+    def test_request_injects_chinese_language_policy(self) -> None:
+        request = _chat_completion_request(
+            Settings(api_key="test", model="generic"),
+            [
+                ChatMessage(role="system", content="base policy"),
+                ChatMessage(role="user", content="请修复这个测试"),
+            ],
+            [],
+        )
+        self.assertIn("简体中文", request["messages"][0]["content"])
+        self.assertIn("base policy", request["messages"][0]["content"])
+
+    def test_request_injects_english_language_policy(self) -> None:
+        request = _chat_completion_request(
+            Settings(api_key="test", model="generic"),
+            [ChatMessage(role="system", content="base policy"), ChatMessage(role="user", content="Fix this test")],
+            [],
+        )
+        self.assertIn("respond in English", request["messages"][0]["content"])
+
     def test_usage_is_extracted_from_provider_response(self) -> None:
         class ProviderUsage:
             prompt_tokens = 12

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,31 @@ _PROTECTED_DIRECTORY_NAMES = {".git", ".seecoder", ".venv", "node_modules", "__p
 _MAX_FILE_CHARS = 12_000
 _MAX_FILE_BYTES = 1_000_000
 _MAX_WRITE_CHARS = 500_000
+
+
+def _read_text_lines(path: Path) -> list[str] | None:
+    """Return a bounded UTF-8 snapshot, or ``None`` for binary/unreadable files."""
+    try:
+        if path.stat().st_size > _MAX_FILE_BYTES:
+            return None
+        raw = path.read_bytes()
+        if b"\x00" in raw[:8_192]:
+            return None
+        return raw.decode("utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _line_delta(before: list[str] | None, after: list[str] | None) -> tuple[int, int]:
+    """Return (added, deleted) lines for a successful mutation."""
+    if before is None or after is None:
+        return 0, 0
+    added = deleted = 0
+    for tag, old_start, old_end, new_start, new_end in SequenceMatcher(None, before, after).get_opcodes():
+        if tag != "equal":
+            deleted += old_end - old_start
+            added += new_end - new_start
+    return added, deleted
 
 
 def _required_string(arguments: dict[str, Any], name: str) -> str:
@@ -41,6 +68,13 @@ def _is_sensitive_path(boundary: WorkspaceBoundary, path: Path) -> bool:
     return any(part == ".env" or (part.startswith(".env.") and part != ".env.example") for part in relative_parts)
 
 
+def _is_mutation_blocked(boundary: WorkspaceBoundary, path: Path) -> bool:
+    """Prevent edits to project metadata, environments, caches, and credentials."""
+
+    relative_parts = path.resolve(strict=False).relative_to(boundary.root).parts
+    return _is_sensitive_path(boundary, path) or any(part in _PROTECTED_DIRECTORY_NAMES for part in relative_parts)
+
+
 def _atomic_write(destination: Path, content: str) -> None:
     """Replace one workspace file without exposing a partially written result."""
 
@@ -57,6 +91,7 @@ def _atomic_write(destination: Path, content: str) -> None:
 
 
 class ListFilesTool:
+    capability = "read"
     name = "list_files"
     description = "List files and directories below a path in the configured workspace."
     parameters: dict[str, Any] = {
@@ -134,6 +169,7 @@ class ListFilesTool:
 
 
 class ReadFileTool:
+    capability = "read"
     name = "read_file"
     description = "Read a UTF-8 text file from the configured workspace, optionally by line range."
     parameters: dict[str, Any] = {
@@ -208,6 +244,7 @@ class ReadFileTool:
 
 
 class WriteFileTool:
+    capability = "write"
     name = "write_file"
     description = "Atomically create or replace a UTF-8 text file within the configured workspace."
     parameters: dict[str, Any] = {
@@ -235,24 +272,183 @@ class WriteFileTool:
         destination = self.boundary.resolve(raw_path)
         if destination == self.boundary.root:
             return ToolResult.failure("InvalidPath", "Cannot replace the workspace directory")
-        if _is_sensitive_path(self.boundary, destination):
-            return ToolResult.failure("SensitivePath", "Writing dotenv configuration files is not allowed")
+        if _is_mutation_blocked(self.boundary, destination):
+            return ToolResult.failure("ProtectedPath", "Writing project metadata, environments, caches, or credential files is not allowed")
         destination.parent.mkdir(parents=True, exist_ok=True)
         # Re-resolve after mkdir to defend against an existing symlink in a newly
         # traversed parent directory.
         destination = self.boundary.resolve(str(destination))
         existed = destination.exists()
+        before = _read_text_lines(destination) if existed else []
         _atomic_write(destination, content)
+        added, deleted = _line_delta(before, content.splitlines())
         return ToolResult.success(
             {
                 "path": self.boundary.relative(destination),
                 "bytes_written": len(content.encode("utf-8")),
                 "created": not existed,
+                "added_lines": added,
+                "deleted_lines": deleted,
             }
         )
 
 
+class DeleteFileTool:
+    """Delete one regular workspace file with the normal mutation policy."""
+
+    capability = "write"
+    name = "delete_file"
+    description = (
+        "Delete one regular file inside the workspace without invoking a shell. "
+        "Directories, symbolic links, credentials, and project metadata are refused."
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {"path": {"type": "string", "description": "Workspace-relative file path to delete"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, boundary: WorkspaceBoundary) -> None:
+        self.boundary = boundary
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        raw_path = _required_string(arguments, "path")
+        requested = Path(raw_path).expanduser()
+        lexical = requested if requested.is_absolute() else self.boundary.root / requested
+        if lexical.is_symlink():
+            return ToolResult.failure("SymlinkPath", "Refusing to delete a symbolic link")
+        path = self.boundary.resolve(raw_path)
+        if not path.exists():
+            return ToolResult.failure("NotFound", f"File does not exist: {raw_path}")
+        if not path.is_file():
+            return ToolResult.failure("NotAFile", f"Path is not a regular file: {raw_path}")
+        if _is_mutation_blocked(self.boundary, path):
+            return ToolResult.failure("ProtectedPath", "Deleting project metadata, environments, caches, or credential files is not allowed")
+        deleted_lines = len(_read_text_lines(path) or [])
+        path.unlink()
+        return ToolResult.success({"path": self.boundary.relative(path), "deleted": True, "added_lines": 0, "deleted_lines": deleted_lines})
+
+
+class CreateDirectoryTool:
+    """Create a workspace directory without invoking a shell."""
+
+    capability = "write"
+    name = "create_directory"
+    description = "Create a directory inside the workspace; existing directories are reported as a no-op."
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {"path": {"type": "string", "description": "Workspace-relative directory path to create"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, boundary: WorkspaceBoundary) -> None:
+        self.boundary = boundary
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        raw_path = _required_string(arguments, "path")
+        requested = Path(raw_path).expanduser()
+        lexical = requested if requested.is_absolute() else self.boundary.root / requested
+        if lexical.is_symlink():
+            return ToolResult.failure("SymlinkPath", "Refusing to create through a symbolic link")
+        destination = self.boundary.resolve(raw_path)
+        if destination == self.boundary.root:
+            return ToolResult.success({"path": ".", "created": False, "already_exists": True})
+        if _is_mutation_blocked(self.boundary, destination):
+            return ToolResult.failure("ProtectedPath", "Creating project metadata, environments, caches, or credential paths is not allowed")
+        if destination.exists():
+            if destination.is_dir():
+                return ToolResult.success({"path": self.boundary.relative(destination), "created": False, "already_exists": True})
+            return ToolResult.failure("PathExists", f"A non-directory path already exists: {raw_path}")
+        destination.mkdir(parents=True, exist_ok=False)
+        return ToolResult.success({"path": self.boundary.relative(destination), "created": True})
+
+
+class CopyFileTool:
+    """Copy one regular file inside the workspace without following symlinks."""
+
+    capability = "write"
+    name = "copy_file"
+    description = "Copy one regular workspace file to a new path without overwriting an existing destination."
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "source": {"type": "string", "description": "Workspace-relative source file"},
+            "destination": {"type": "string", "description": "Workspace-relative new file path"},
+        },
+        "required": ["source", "destination"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, boundary: WorkspaceBoundary) -> None:
+        self.boundary = boundary
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        source, destination = _file_pair(self.boundary, arguments)
+        if source is None or destination is None:
+            return ToolResult.failure("InvalidPath", "Source and destination must be different regular workspace files")
+        if not source.exists():
+            return ToolResult.failure("NotFound", f"Source file does not exist: {arguments.get('source', '')}")
+        if not source.is_file():
+            return ToolResult.failure("NotAFile", f"Source path is not a regular file: {arguments.get('source', '')}")
+        if destination.exists():
+            return ToolResult.failure("DestinationExists", f"Destination already exists: {arguments.get('destination', '')}")
+        if _is_mutation_blocked(self.boundary, source) or _is_mutation_blocked(self.boundary, destination):
+            return ToolResult.failure("ProtectedPath", "Copying project metadata, environments, caches, or credential files is not allowed")
+        source_lines = _read_text_lines(source)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination, follow_symlinks=False)
+        return ToolResult.success({"source": self.boundary.relative(source), "destination": self.boundary.relative(destination), "copied": True, "added_lines": len(source_lines or []), "deleted_lines": 0})
+
+
+class MoveFileTool:
+    """Move one regular file inside the workspace without overwriting."""
+
+    capability = "write"
+    name = "move_file"
+    description = "Move or rename one regular workspace file without overwriting an existing destination."
+    parameters = CopyFileTool.parameters
+
+    def __init__(self, boundary: WorkspaceBoundary) -> None:
+        self.boundary = boundary
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        source, destination = _file_pair(self.boundary, arguments)
+        if source is None or destination is None:
+            return ToolResult.failure("InvalidPath", "Source and destination must be different regular workspace files")
+        if not source.exists():
+            return ToolResult.failure("NotFound", f"Source file does not exist: {arguments.get('source', '')}")
+        if not source.is_file():
+            return ToolResult.failure("NotAFile", f"Source path is not a regular file: {arguments.get('source', '')}")
+        if destination.exists():
+            return ToolResult.failure("DestinationExists", f"Destination already exists: {arguments.get('destination', '')}")
+        if _is_mutation_blocked(self.boundary, source) or _is_mutation_blocked(self.boundary, destination):
+            return ToolResult.failure("ProtectedPath", "Moving project metadata, environments, caches, or credential files is not allowed")
+        source_lines = _read_text_lines(source)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.replace(destination)
+        return ToolResult.success({"source": self.boundary.relative(source), "destination": self.boundary.relative(destination), "moved": True, "added_lines": len(source_lines or []), "deleted_lines": 0})
+
+
+def _file_pair(boundary: WorkspaceBoundary, arguments: dict[str, Any]) -> tuple[Path | None, Path | None]:
+    source_raw = _required_string(arguments, "source")
+    destination_raw = _required_string(arguments, "destination")
+    source_requested = Path(source_raw).expanduser()
+    destination_requested = Path(destination_raw).expanduser()
+    source_lexical = source_requested if source_requested.is_absolute() else boundary.root / source_requested
+    destination_lexical = destination_requested if destination_requested.is_absolute() else boundary.root / destination_requested
+    if source_lexical.is_symlink() or destination_lexical.is_symlink():
+        return None, None
+    source = boundary.resolve(source_raw)
+    destination = boundary.resolve(destination_raw)
+    if source == destination or destination == boundary.root:
+        return None, None
+    return source, destination
+
+
 class RenameDirectoryTool:
+    capability = "write"
     """Rename a workspace directory, including the selected root, locally."""
 
     name = "rename_directory"
@@ -339,6 +535,7 @@ class RenameDirectoryTool:
 
 
 class SearchFilesTool:
+    capability = "read"
     name = "search_files"
     description = "Search UTF-8 workspace files for an exact text string and return bounded matching lines."
     parameters: dict[str, Any] = {
@@ -427,6 +624,7 @@ class SearchFilesTool:
 
 
 class ApplyPatchTool:
+    capability = "write"
     name = "apply_patch"
     description = "Replace one exact text block in a UTF-8 workspace file after checking its occurrence count."
     parameters: dict[str, Any] = {
@@ -457,8 +655,8 @@ class ApplyPatchTool:
         path = self.boundary.resolve(raw_path)
         if not path.is_file():
             return ToolResult.failure("NotAFile", f"Path is not a regular file: {raw_path}")
-        if _is_sensitive_path(self.boundary, path):
-            return ToolResult.failure("SensitivePath", "Patching dotenv configuration files is not allowed")
+        if _is_mutation_blocked(self.boundary, path):
+            return ToolResult.failure("ProtectedPath", "Patching project metadata, environments, caches, or credential files is not allowed")
         if path.stat().st_size > self.max_file_bytes:
             return ToolResult.failure("FileTooLarge", f"File exceeds the {self.max_file_bytes}-byte patch limit")
         try:
@@ -473,11 +671,14 @@ class ApplyPatchTool:
                 data={"path": self.boundary.relative(path), "occurrences": occurrences},
             )
         updated = content.replace(old_text, new_text, 1)
+        added, deleted = _line_delta(content.splitlines(), updated.splitlines())
         _atomic_write(path, updated)
         return ToolResult.success(
             {
                 "path": self.boundary.relative(path),
                 "replaced_occurrences": 1,
                 "bytes_written": len(updated.encode("utf-8")),
+                "added_lines": added,
+                "deleted_lines": deleted,
             }
         )

@@ -12,18 +12,18 @@ test("backend invocation is literal argv and never enables host shell", () => {
   assert.ok(!result.args.includes("--host-shell"));
 });
 
-test("mode is forwarded only for non-auto modes", () => {
+test("selected mode is always forwarded so UI and backend cannot diverge", () => {
   const ask = buildBackendInvocation("/usr/local/bin/uv", "inspect files", "/tmp/workspace", "ask");
   assert.ok(ask.args.includes("--mode"));
   assert.ok(ask.args.includes("ask"));
   const auto = buildBackendInvocation("/usr/local/bin/uv", "inspect files", "/tmp/workspace", "auto");
-  assert.ok(!auto.args.includes("--mode"));
+  assert.deepEqual(auto.args.slice(-2), ["--mode", "auto"]);
 });
 
 test("chat invocation persists and resumes a local session without a shell", () => {
   const result = buildChatInvocation("uv", "/tmp/workspace", "ask", "/tmp/session.json", true);
   assert.equal(result.command, "uv");
-  assert.deepEqual(result.args, ["run", "seecoder", "chat", "--workspace", "/tmp/workspace", "--event-json", "--save", "/tmp/session.json", "--resume", "/tmp/session.json", "--mode", "ask"]);
+  assert.deepEqual(result.args, ["run", "seecoder", "chat", "--workspace", "/tmp/workspace", "--event-json", "--save", "/tmp/session.json", "--mode", "ask", "--resume", "/tmp/session.json"]);
 });
 
 test("event parser rejects malformed and non-object data", () => {
@@ -45,6 +45,24 @@ test("git environment parser produces file and line-change summaries", () => {
       { path: "README.md", status: "M", added: 3, deleted: 0 },
     ],
   });
+});
+
+test("git environment parser includes untracked files", () => {
+  const result = parseGitEnvironment({
+    branch: "main\n",
+    nameStatus: "M\tREADME.md\n",
+    numstat: "1\t0\tREADME.md\n",
+    untracked: "src/new.js\n",
+    untrackedCounts: { "src/new.js": { added: 4, deleted: 0 } },
+  });
+  assert.deepEqual(result.files.at(-1), { path: "src/new.js", status: "??", added: 4, deleted: 0 });
+  assert.equal(result.added, 5);
+});
+
+test("git environment parser keeps detached or unborn repositories marked as repositories", () => {
+  const environment = parseGitEnvironment({ isRepository: true, branch: "", untracked: "new.py", untrackedCounts: { "new.py": { added: 2, deleted: 0 } } });
+  assert.equal(environment.isRepository, true);
+  assert.equal(environment.files[0].path, "new.py");
 });
 
 test("unified diff parser classifies lines for the local review panel", () => {

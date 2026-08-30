@@ -2,11 +2,43 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Protocol
 
 from seecoder.config import Settings
 from seecoder.types import ChatMessage, ModelResponse, StreamEvent, ToolCall, Usage
+
+
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+
+def _language_instruction(messages: list[ChatMessage]) -> str:
+    """Build a request-local language policy from the latest user turn.
+
+    The instruction is deliberately added to every provider request so it also
+    applies after retries, resumed sessions, and context compaction. Code,
+    paths, identifiers, and quoted text remain unchanged.
+    """
+
+    latest = next((message.content or "" for message in reversed(messages) if message.role == "user"), "")
+    cjk = len(_CJK_RE.findall(latest))
+    latin = len(_LATIN_RE.findall(latest))
+    if cjk and cjk / max(1, cjk + latin) >= 0.15:
+        return (
+            "语言约束：请使用简体中文回答最近一条用户消息。所有解释、状态、错误和总结都使用中文；\n"
+            "代码、命令、文件路径、标识符和用户引用的原文保持原样。"
+        )
+    if latin:
+        return (
+            "Language policy: respond in English, matching the latest user message. Keep code, commands, "
+            "file paths, identifiers, and quoted text unchanged."
+        )
+    return (
+        "Language policy: respond in the same natural language as the latest user message. "
+        "Keep code, commands, file paths, identifiers, and quoted text unchanged."
+    )
 
 
 class ModelClientError(RuntimeError):
@@ -17,6 +49,15 @@ class ModelClientError(RuntimeError):
 
 class ModelClient(Protocol):
     def complete(self, messages: list[ChatMessage], tools: list[dict[str, Any]]) -> ModelResponse: ...
+
+    def complete_stream(self, messages: list[ChatMessage], tools: list[dict[str, Any]]):
+        """Yield streaming events and finish with a ``done`` event.
+
+        Adapters may implement this natively or let ``RetryingModelClient``
+        provide the non-streaming fallback. Keeping the method in the protocol
+        makes the runner contract explicit and removes an unsafe type escape.
+        """
+        ...
 
 
 def _as_openai_message(message: ChatMessage) -> dict[str, Any]:
@@ -40,9 +81,17 @@ def _as_openai_message(message: ChatMessage) -> dict[str, Any]:
 def _chat_completion_request(
     settings: Settings, messages: list[ChatMessage], tools: list[dict[str, Any]]
 ) -> dict[str, Any]:
+    serialized_messages = [_as_openai_message(message) for message in messages]
+    language_instruction = _language_instruction(messages)
+    if serialized_messages and serialized_messages[0].get("role") == "system":
+        serialized_messages[0]["content"] = (
+            language_instruction + "\n\n" + (serialized_messages[0].get("content") or "")
+        )
+    else:
+        serialized_messages.insert(0, {"role": "system", "content": language_instruction})
     request: dict[str, Any] = {
         "model": settings.model,
-        "messages": [_as_openai_message(message) for message in messages],
+        "messages": serialized_messages,
         "tools": tools,
         "tool_choice": "auto",
         "temperature": 0,
@@ -118,7 +167,12 @@ class OpenAICompatibleClient:
                 "The 'openai' package is not installed. Run 'uv sync' before using a real model.",
                 retryable=False,
             ) from error
-        self._client = OpenAI(api_key=settings.api_key, base_url=settings.base_url, max_retries=0)
+        self._client = OpenAI(
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            max_retries=0,
+            timeout=settings.model_timeout_s,
+        )
 
     def complete(self, messages: list[ChatMessage], tools: list[dict[str, Any]]) -> ModelResponse:
         try:

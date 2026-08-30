@@ -99,6 +99,10 @@ def _token_json_printer(event: Any) -> None:
 
     if event.kind == "content_delta":
         print(json.dumps({"event": "token", "data": {"text": event.text}}, ensure_ascii=False), flush=True)
+    elif event.kind == "reasoning_delta":
+        # Reasoning is surfaced as a separate, clearly labelled local event so
+        # the UI can distinguish model thinking from the final answer stream.
+        print(json.dumps({"event": "reasoning", "data": {"text": event.text}}, ensure_ascii=False), flush=True)
 
 
 def _auto_approver(call: ToolCall) -> bool:
@@ -211,9 +215,19 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
     event_sink = _event_json_printer if args.event_json else (None if args.quiet else _event_printer)
     resume = getattr(args, "resume", None)
     if resume is not None:
+        # The snapshot owns the conversation mode. Build the approver from the
+        # persisted value so resuming an ASK/PLAN conversation cannot silently
+        # fall back to the process default mode.
+        try:
+            persisted_mode = Mode(str(json.loads(resume.read_text(encoding="utf-8")).get("mode", mode.value)))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            persisted_mode = mode
+        approver = _make_approver(persisted_mode, args.auto_approve, sys.stdin)
         conversation = Conversation.load(
             resume, settings=settings, model_client=client, workspace=workspace,
             trace=trace, event_sink=event_sink, approver=approver,
+            stream_sink=_token_json_printer if args.event_json else None,
+            compactor=_make_compactor(settings, client),
         )
         print("Resumed saved conversation from " + str(resume) + ".", file=sys.stderr)
         first = False
@@ -231,7 +245,24 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
         text = line.strip()
         if not text:
             continue
-        outcome = conversation.start(text) if first else conversation.send(text)
+        try:
+            outcome = conversation.start(text) if first else conversation.send(text)
+        except Exception as error:  # Keep the long-lived chat process usable after one bad turn.
+            final_text = f"Local turn failed: {type(error).__name__}: {error}"
+            if args.event_json:
+                print(json.dumps({"event": "turn_outcome", "data": {
+                    "state": RunState.FAILED_PROTOCOL,
+                    "final_text": final_text,
+                    "steps": 0,
+                    "mode": conversation.current_mode.value,
+                    "recoverable": True,
+                }}, ensure_ascii=False), flush=True)
+            else:
+                print(final_text, file=sys.stderr, flush=True)
+            if save is not None:
+                conversation.save(save)
+            first = False
+            continue
         first = False
         if save is not None:
             conversation.save(save)
@@ -240,6 +271,7 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
                 "state": outcome.state, "final_text": outcome.final_text, "steps": outcome.steps,
                 "mode": outcome.mode.value,
                 "plan": [step.__dict__ for step in outcome.plan],
+                "recoverable": outcome.state in {RunState.FAILED_MODEL, RunState.FAILED_PROTOCOL, RunState.STOP_CONTEXT_BUDGET},
             }}, ensure_ascii=False), flush=True)
         else:
             _print_outcome(outcome, quiet=args.quiet)
@@ -256,6 +288,11 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
                 reply = sys.stdin.readline()
             if reply.strip().lower().startswith("y"):
                 executed = conversation.approve_plan()
+                # Persist the post-approval continuation as a distinct turn.
+                # Without this save, a desktop restart after approving a plan
+                # would restore the pre-approval snapshot and replay the plan.
+                if save is not None:
+                    conversation.save(save)
                 if args.event_json:
                     print(json.dumps({"event": "turn_outcome", "data": {
                         "state": executed.state, "final_text": executed.final_text,

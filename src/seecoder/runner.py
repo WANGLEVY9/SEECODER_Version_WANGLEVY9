@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from seecoder.approval import Policy, is_read_only
+from seecoder.approval import Policy
 from seecoder.config import Settings
 from seecoder.compaction import DEFAULT_KEEP_TURNS
 from seecoder.context import ContextBudgetExceeded, ContextManager, _turns, estimate_message_chars
@@ -19,12 +19,16 @@ from seecoder.skills import build_skill_block
 from seecoder.model_client import ModelClient, ModelClientError
 from seecoder.tools import (
     ApplyPatchTool,
+    CopyFileTool,
+    CreateDirectoryTool,
+    DeleteFileTool,
     GitDiffTool,
     GitLogTool,
     GitShowTool,
     GitStatusTool,
     ListFilesTool,
     ListSkillsTool,
+    MoveFileTool,
     ReadFileTool,
     RenameDirectoryTool,
     RunCommandTool,
@@ -59,6 +63,11 @@ Work only through the supplied local tools. First inspect relevant files, make f
 and use run_command to validate your work when feasible. Treat non-zero command exit codes as
 evidence to investigate, not as success. Never claim a task is complete unless you have evidence.
 When finished, provide a concise summary of changes, validation, and any remaining uncertainty.
+Always answer in the same natural language as the latest user request: use Simplified Chinese for
+Chinese requests and English for English requests. For mixed-language requests, use the dominant
+language while preserving code, commands, paths, identifiers, and quoted text verbatim.
+For cleanup, use the dedicated delete_file tool for one temporary file; never try to
+remove files with rm in restricted mode. Do not delete directories or project metadata.
 
 The selected workspace root can be renamed through the local rename_directory tool: call it with
 path='.' and new_name set to one safe directory-name component. Never use pwd, ls, mv, or another
@@ -141,7 +150,7 @@ class AgentRunner:
         self.system_prompt = system_prompt
         self.memory_block = memory_block
         self.mode = mode
-        self.policy = Policy(mode)
+        self.policy = Policy(mode, read_only_resolver=tools.is_read_only)
         self.approver = approver or _auto_allow
         self.stream_sink = stream_sink
         self.compactor = compactor
@@ -170,6 +179,10 @@ class AgentRunner:
             SearchCodeTool(boundary),
             WriteFileTool(boundary),
             ApplyPatchTool(boundary),
+            DeleteFileTool(boundary),
+            CreateDirectoryTool(boundary),
+            CopyFileTool(boundary),
+            MoveFileTool(boundary),
             RenameDirectoryTool(boundary),
             GitDiffTool(boundary),
             GitStatusTool(boundary),
@@ -231,7 +244,7 @@ class AgentRunner:
         """Consume a streaming response, forward deltas, and return the assembled response."""
 
         response: ModelResponse | None = None
-        for event in self.model_client.complete_stream(messages, self.tools.schemas()):  # type: ignore[attr-defined]
+        for event in self.model_client.complete_stream(messages, self.tools.schemas()):
             if self.stream_sink is not None:
                 self.stream_sink(event)
             if event.kind == "done":
@@ -274,6 +287,8 @@ class AgentRunner:
         self._emit("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps})
         steps = 0
         consecutive_tool_errors = 0
+        last_tool_error = ""
+        repeated_failures: dict[str, int] = {}
         plan_steps: list[PlanStep] = []
         total_usage = Usage(0, 0, 0)
         try:
@@ -358,7 +373,7 @@ class AgentRunner:
                     },
                 )
                 calls = response.tool_calls
-                if calls and all(is_read_only(call.name) for call in calls):
+                if calls and all(self.tools.is_read_only(call.name) for call in calls):
                     results = self._dispatch_parallel(calls)
                 else:
                     results = [self._dispatch_with_policy(call, plan_steps) for call in calls]
@@ -387,13 +402,25 @@ class AgentRunner:
                     )
                     if not result.ok and not self._is_plan_notice(result):
                         consecutive_tool_errors += 1
-                        if consecutive_tool_errors >= self.settings.max_consecutive_tool_errors:
+                        last_tool_error = f"{call.name}: {result.error.message if result.error else 'unknown error'}"
+                        signature = call.name + "\0" + call.arguments
+                        repeated_failures[signature] = repeated_failures.get(signature, 0) + 1
+                        same_call_repeated = repeated_failures[signature] >= 2
+                        if same_call_repeated or consecutive_tool_errors >= self.settings.max_consecutive_tool_errors:
+                            reason = "the same failing call was repeated" if same_call_repeated else "repeated local tool errors"
                             return self._finish(
                                 RunState.STOP_TOOL_ERROR_LIMIT,
-                                "Stopped after repeated local tool errors; inspect the trace for details.",
+                                "Stopped after " + reason + "; latest failure was " + last_tool_error + ".",
                                 steps,
                                 usage=total_usage,
                             )
+                    elif result.ok:
+                        # The limit is explicitly consecutive: a successful
+                        # observation means the agent recovered and gets a
+                        # fresh error budget for the next tool sequence.
+                        consecutive_tool_errors = 0
+                        last_tool_error = ""
+                        repeated_failures.clear()
             return self._finish(
                 RunState.STOP_MAX_STEPS,
                 f"Stopped after reaching the configured maximum of {self.settings.max_steps} model steps.",
@@ -419,7 +446,7 @@ class AgentRunner:
         call: ToolCall,
         plan_steps: list[PlanStep],
     ) -> ToolResult:
-        if self.mode == Mode.PLAN and not is_read_only(call.name):
+        if self.mode == Mode.PLAN and not self.tools.is_read_only(call.name):
             plan_steps.append(PlanStep(tool=call.name, arguments=_safe_arguments(call),
                                        description=_plan_description(call)))
             self._emit("plan_proposal", {"name": call.name,

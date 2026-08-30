@@ -24,9 +24,13 @@ _DANGEROUS_COMMANDS = (
 )
 _SENSITIVE_ENV_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "AUTHORIZATION", "CREDENTIAL")
 _RESTRICTED_META_CHARACTERS = frozenset(";|&<>`$()\n\r")
-_RESTRICTED_COMMANDS = frozenset({"python", "python3", "python3.12", "pytest", "ruff", "black", "git"})
+_RESTRICTED_COMMANDS = frozenset({
+    "python", "python3", "python3.12", "pytest", "ruff", "black", "git",
+    "node", "npm", "pnpm", "yarn", "bun", "cargo", "go", "swift", "swiftc", "dotnet",
+})
 _PYTHON_MODULES = frozenset({"unittest", "pytest", "compileall", "ruff"})
 _GIT_READ_ONLY_SUBCOMMANDS = frozenset({"diff", "status", "log", "show", "ls-files", "rev-parse"})
+_PACKAGE_SCRIPT_NAMES = frozenset({"test", "lint", "build", "check", "typecheck", "format", "fmt"})
 
 _HOST_SHELL_PARAMETERS: dict[str, Any] = {
     "type": "object",
@@ -45,7 +49,7 @@ _RESTRICTED_PARAMETERS: dict[str, Any] = {
             "items": {"type": "string"},
             "minItems": 1,
             "maxItems": 32,
-            "description": "Allowed test/build/format/read-only-Git command as a literal argument array",
+            "description": "Allowed project test/build/format/read-only-Git command as a literal argument array",
         },
         "timeout_s": {"type": "integer", "minimum": 1, "maximum": 120, "default": 30},
     },
@@ -83,6 +87,7 @@ def _drain(stream: Any, capture: _BoundedCapture) -> None:
 
 
 class RunCommandTool:
+    capability = "command"
     name = "run_command"
     description = "Run a bounded local command and return bounded stdout/stderr."
     parameters = _HOST_SHELL_PARAMETERS
@@ -192,7 +197,10 @@ class RunCommandTool:
             )
         program = argv[0]
         if program not in _RESTRICTED_COMMANDS:
-            return ToolResult.failure("RestrictedCommand", f"'{program}' is not allowed in restricted mode")
+            return ToolResult.failure(
+                "RestrictedCommand",
+                f"'{program}' is not allowed in restricted mode. Use a dedicated local tool when available (for example delete_file for file cleanup).",
+            )
         if program.startswith("python"):
             if len(argv) < 3 or argv[1] != "-m" or argv[2] not in _PYTHON_MODULES:
                 return ToolResult.failure(
@@ -202,6 +210,33 @@ class RunCommandTool:
         elif program == "git":
             if len(argv) < 2 or argv[1] not in _GIT_READ_ONLY_SUBCOMMANDS:
                 return ToolResult.failure("RestrictedCommand", "only read-only Git subcommands are allowed")
+        elif program in {"npm", "pnpm", "yarn", "bun"}:
+            if not _valid_package_command(argv):
+                return ToolResult.failure("RestrictedCommand", "package-manager commands are limited to test, lint, build, check, typecheck, or format scripts")
+        elif program == "cargo":
+            if len(argv) < 2 or argv[1] not in {"test", "check", "build", "clippy", "fmt"}:
+                return ToolResult.failure("RestrictedCommand", "cargo is limited to test, check, build, clippy, and fmt")
+        elif program == "go":
+            if len(argv) < 2 or argv[1] not in {"test", "build", "vet", "fmt"}:
+                return ToolResult.failure("RestrictedCommand", "go is limited to test, build, vet, and fmt")
+        elif program == "swift":
+            if len(argv) < 2 or argv[1] not in {"test", "build", "package"}:
+                return ToolResult.failure("RestrictedCommand", "swift is limited to test, build, and package")
+        elif program == "swiftc":
+            if len(argv) < 2 or argv[1] not in {"-typecheck", "-parse"}:
+                return ToolResult.failure("RestrictedCommand", "swiftc is limited to -typecheck and -parse")
+        elif program == "node":
+            if len(argv) < 3 or argv[1] != "--check":
+                return ToolResult.failure("RestrictedCommand", "node is limited to --check for syntax validation")
+        elif program == "dotnet":
+            if len(argv) < 2 or argv[1] not in {"test", "build"}:
+                return ToolResult.failure("RestrictedCommand", "dotnet is limited to test and build")
+        elif program == "ruff":
+            if len(argv) < 2 or argv[1] not in {"check", "format"} or (argv[1] == "format" and "--check" not in argv):
+                return ToolResult.failure("RestrictedCommand", "ruff is limited to check and format --check")
+        elif program == "black":
+            if "--check" not in argv:
+                return ToolResult.failure("RestrictedCommand", "black is limited to --check")
         return argv
 
     @staticmethod
@@ -232,3 +267,16 @@ class RunCommandTool:
             process.kill()
         except ProcessLookupError:
             return
+
+
+def _valid_package_command(argv: list[str]) -> bool:
+    """Allow common read/validation scripts while rejecting arbitrary package commands."""
+
+    if len(argv) < 2:
+        return False
+    if argv[1] in _PACKAGE_SCRIPT_NAMES:
+        return True
+    if argv[1] in {"run", "exec"} and len(argv) >= 3:
+        script = argv[2].split(":", 1)[0]
+        return script in _PACKAGE_SCRIPT_NAMES
+    return False

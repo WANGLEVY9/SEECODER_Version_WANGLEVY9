@@ -9,6 +9,7 @@ from seecoder.types import ToolResult
 
 
 class SpawnAgentTool:
+    capability = "write"
     """Run a nested, bounded agent to complete a focused sub-task.
 
     The factory is supplied by the runner and internally disables further sub-agent

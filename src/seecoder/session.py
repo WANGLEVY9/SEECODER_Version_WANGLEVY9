@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,7 +13,7 @@ from seecoder.config import Settings
 from seecoder.model_client import ModelClient
 from seecoder.runner import AgentRunner, DEFAULT_SYSTEM_PROMPT
 from seecoder.trace import NullTraceWriter, TraceWriter
-from seecoder.types import ChatMessage, Mode, RunOutcome, ToolCall, Usage
+from seecoder.types import ChatMessage, Mode, RunOutcome, RunState, ToolCall, Usage
 
 
 Approver = Callable[[ToolCall], bool]
@@ -124,7 +126,7 @@ class Conversation:
 
         self.current_mode = Mode.AUTO
         self.runner.mode = Mode.AUTO
-        self.runner.policy = Policy(Mode.AUTO)
+        self.runner.policy = Policy(Mode.AUTO, read_only_resolver=self.runner.tools.is_read_only)
         self._messages.append(
             ChatMessage(role="user", content="The proposed plan is approved. Execute it now.")
         )
@@ -155,7 +157,23 @@ class Conversation:
         """Persist the conversation to a JSON file and return its path."""
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+        # Replace the snapshot atomically so a desktop/CLI interruption cannot
+        # leave a truncated JSON file that makes the next resume impossible.
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(payload)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         return path
 
     def restore(self, data: dict[str, object]) -> None:
@@ -171,7 +189,7 @@ class Conversation:
         self._total_steps = int(data.get("steps", 0))
         self.current_mode = Mode(str(data.get("mode", "auto")))
         self.runner.mode = self.current_mode
-        self.runner.policy = Policy(self.current_mode)
+        self.runner.policy = Policy(self.current_mode, read_only_resolver=self.runner.tools.is_read_only)
 
     @classmethod
     def load(
@@ -185,6 +203,8 @@ class Conversation:
         event_sink: EventSink | None = None,
         approver: Approver | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        stream_sink: Callable[[object], None] | None = None,
+        compactor: Callable[[list[ChatMessage]], str] | None = None,
     ) -> Conversation:
         """Load a saved conversation and rehydrate it onto a fresh runner."""
 
@@ -199,12 +219,29 @@ class Conversation:
             mode=Mode(str(data.get("mode", "auto"))),
             approver=approver,
             system_prompt=system_prompt,
+            stream_sink=stream_sink,
+            compactor=compactor,
         )
         conversation.restore(data)
         return conversation
 
     def _advance(self) -> RunOutcome:
         outcome = self.runner.run_messages(self._messages)
+        # A failed provider request does not produce an assistant message, so
+        # the next user turn would otherwise be serialized as two adjacent
+        # ``user`` messages. Record the failure as an assistant observation;
+        # this keeps the provider-neutral history well formed and gives the
+        # next request enough context to recover without replaying tools.
+        if outcome.state == RunState.FAILED_MODEL and (
+            not self._messages or self._messages[-1].role == "user"
+        ):
+            self._messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content="[Previous model attempt failed; continue from the user's latest request.]\n"
+                    + outcome.final_text,
+                )
+            )
         # A local root rename updates the shared boundary. Persist that new
         # path so resume-after-restart does not point at the old directory.
         if self.runner.workspace_boundary is not None:

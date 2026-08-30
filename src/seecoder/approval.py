@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from seecoder.types import ApprovalDecision, Mode
 
 
@@ -27,11 +29,13 @@ class Policy:
     they are captured as a proposed plan for human review instead of being denied.
     """
 
-    def __init__(self, mode: Mode) -> None:
+    def __init__(self, mode: Mode, *, read_only_resolver: Callable[[str], bool] | None = None) -> None:
         self.mode = mode
+        self._read_only_resolver = read_only_resolver
 
     def decide(self, tool_name: str) -> ApprovalDecision:
-        if is_read_only(tool_name):
+        is_read_only_tool = self._read_only_resolver(tool_name) if self._read_only_resolver else is_read_only(tool_name)
+        if is_read_only_tool:
             return ApprovalDecision.ALLOW
         if self.mode == Mode.AUTO:
             return ApprovalDecision.ALLOW

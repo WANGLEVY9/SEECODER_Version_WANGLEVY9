@@ -35,7 +35,7 @@
           <div class="composer">
             <textarea id="task-input" rows="3" placeholder="描述一个真实的编程任务…"></textarea>
             <div class="composer-footer">
-              <div class="composer-tools"><button id="composer-workspace" class="subtle-button">＋</button><select id="mode-select" class="mode-select" title="工作模式"><option value="ask">询问</option><option value="plan">计划</option><option value="auto">自动</option></select><span>本地 · 受限执行</span></div>
+              <div class="composer-tools"><button id="composer-workspace" class="subtle-button">＋</button><select id="mode-select" class="mode-select" title="工作模式"><option value="ask">Ask</option><option value="plan">Plan</option><option value="auto">Auto Mode</option></select><span>本地 · 受限执行</span></div>
               <div class="send-controls"><span class="shortcut">⌘ ↵</span><button id="stop-run" class="stop-button" disabled>停止</button><button id="send-task" class="send-button" aria-label="发送任务">↑</button></div>
             </div>
           </div>
@@ -47,6 +47,12 @@
         <div class="activity-topbar drag-region"></div>
         <div class="activity-content">
           <div class="activity-heading"><div><span class="eyebrow">执行轨迹</span><h2>运行状态</h2></div><div class="inspector-actions"><button id="open-review" class="review-toggle" title="查看本地变更审阅">审阅</button><span id="state-badge" class="state-badge">就绪</span></div></div>
+          <nav class="inspector-tabs" aria-label="检查器页面">
+            <button class="inspector-tab active" data-inspector-page="run">运行</button>
+            <button class="inspector-tab" data-inspector-page="tools">工具 / MCP</button>
+            <button class="inspector-tab" data-inspector-page="skills">Skills</button>
+          </nav>
+          <section id="run-inspector" class="inspector-page">
           <p class="activity-description">每一步都来自自研 AgentRunner 的本地 JSONL 事件，不使用托管执行服务。</p>
           <div id="cost-badge" class="cost-badge">tokens 0</div>
           <section class="environment-card" aria-label="工作区环境信息">
@@ -55,6 +61,17 @@
           </section>
           <div id="activity-list" class="activity-list"></div>
           <button id="about-button" class="about-button">设计与安全说明 <span>→</span></button>
+          </section>
+          <section id="tools-inspector" class="inspector-page" hidden aria-label="工具与 MCP 管理">
+            <p class="panel-intro">本地工具由 ToolRegistry 统一定义、校验和执行。MCP 连接仅允许显式配置，默认不连接外部服务。</p>
+            <div class="management-section"><h3>ToolRegistry</h3><div class="management-list" id="tool-list"></div></div>
+            <div class="management-section"><h3>MCP 服务</h3><div class="management-row"><span class="management-icon">◌</span><div><b>未连接外部 MCP</b><small>可在项目 .seecoder/mcp.json 中登记只读服务，权限仍由本地策略控制。</small></div><em>0 已连接</em></div></div>
+          </section>
+          <section id="skills-inspector" class="inspector-page" hidden aria-label="Skills 管理">
+            <p class="panel-intro">Skills 是工作区内受边界保护的 Markdown 指南，不会新增工具权限。</p>
+            <div class="management-section"><h3>内置 Skills</h3><div class="management-list" id="skill-list"></div></div>
+            <div class="management-section"><h3>扩展边界</h3><div class="management-row"><span class="management-icon">⌘</span><div><b>本地优先</b><small>读取、写入、命令执行、审批和终止条件始终由 AgentRunner 控制。</small></div><em>受限</em></div></div>
+          </section>
         </div>
         <section id="review-pane" class="review-pane" hidden aria-label="本地 Git 变更审阅">
           <header class="review-heading"><div><span class="eyebrow">本地 Git · 只读</span><h2>审阅变更</h2></div><button id="close-review" class="close-review" title="返回运行状态">×</button></header>
