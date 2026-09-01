@@ -123,6 +123,17 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(loaded.task_plan.id, conversation.task_plan.id)
         self.assertEqual(loaded.task_plan.status, PlanStatus.COMPLETED)
 
+    def test_declining_plan_persists_cancelled_state(self) -> None:
+        model = ScriptedModel([
+            ModelResponse(None, (call("a", "write_file", {"path": "x.txt", "content": "hi"}),)),
+            ModelResponse("Plan: create x.txt."),
+        ])
+        conversation = Conversation(settings=self.settings, model_client=model, workspace=self.workspace, mode=Mode.PLAN)
+        self.assertEqual(conversation.start("Create x.txt").state, RunState.PLAN_PROPOSED)
+        conversation.cancel_plan("User declined the proposed plan.")
+        self.assertEqual(conversation.task_plan.status, PlanStatus.CANCELLED)
+        self.assertIn("declined", conversation.task_plan.items[0].evidence)
+
     def test_conversation_save_and_load_round_trips(self) -> None:
         model = ScriptedModel([ModelResponse("First answer."), ModelResponse("Second answer.")])
         conversation = Conversation(settings=self.settings, model_client=model, workspace=self.workspace)

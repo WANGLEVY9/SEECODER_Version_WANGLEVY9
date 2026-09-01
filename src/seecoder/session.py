@@ -201,6 +201,14 @@ class Conversation:
         )
         return self._advance()
 
+    def cancel_plan(self, evidence: str = "Plan cancelled by user.") -> None:
+        """Mark the current proposed/executing plan cancelled and persist its evidence."""
+
+        if self._task_plan is None:
+            raise ValueError("There is no active task plan to cancel.")
+        self._task_plan.transition(PlanStatus.CANCELLED, evidence=evidence)
+        self._emit_plan_state()
+
     def summary(self) -> RunOutcome:
         """Ask the model to summarize the conversation so far (still respects the mode)."""
 
@@ -380,6 +388,9 @@ class Conversation:
         if self._task_plan is not None:
             if outcome.state == RunState.PLAN_PROPOSED:
                 self._task_plan.transition(PlanStatus.PROPOSED)
+                self._emit_plan_state()
+            elif outcome.state == RunState.CANCELLED and self._task_plan.status in {PlanStatus.EXECUTING, PlanStatus.VERIFYING}:
+                self._task_plan.transition(PlanStatus.CANCELLED, evidence=outcome.final_text)
                 self._emit_plan_state()
             elif outcome.state == RunState.FINAL and self._task_plan.status == PlanStatus.EXECUTING:
                 self._task_plan.transition(PlanStatus.VERIFYING)

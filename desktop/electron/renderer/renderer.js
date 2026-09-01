@@ -443,7 +443,8 @@ function handleRunnerEvent(payload) {
       session.taskPlan = { id: data.plan_id, task: data.task || '', status: data.status || 'proposed', items: Array.isArray(data.items) ? data.items : [] };
       session.updatedAt = Date.now(); persist(); renderConversation();
       const completed = session.taskPlan.items.filter((item) => item.status === 'completed').length;
-      addActivity('计划状态：' + session.taskPlan.status, completed + '/' + session.taskPlan.items.length + ' 步已完成', session.taskPlan.status === 'failed' ? 'error' : session.taskPlan.status === 'completed' ? 'ok' : 'running');
+      addActivity('计划状态：' + session.taskPlan.status, completed + '/' + session.taskPlan.items.length + ' 步已完成', ['failed', 'cancelled'].includes(session.taskPlan.status) ? 'error' : session.taskPlan.status === 'completed' ? 'ok' : 'running');
+      if (session.taskPlan.status === 'cancelled') { hideApproval(); setRunning(false); setBadge('已取消', 'error'); }
     }
     return;
   }

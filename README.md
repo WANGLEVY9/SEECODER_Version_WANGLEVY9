@@ -185,7 +185,7 @@ uv run seecoder chat \
 
 可用 `uv run seecoder --help`、`uv run seecoder run --help` 和 `uv run seecoder chat --help` 查看参数。`--resume` 恢复已有快照，`--event-json` 输出桌面端使用的本地 JSONL 事件，`--trace-dir` 指定工作区外的审计目录，`--max-steps` 限制单次循环步数。
 
-桌面端和 CLI 的 `chat` 是长生命周期多轮会话。快照当前为 v3：加载时会校验版本、消息角色、工具调用顺序、字段类型、未完成审批和 TaskPlan 状态；旧 v1/v2 快照会迁移为 v3。Plan 模式会为每次提案建立稳定计划 ID，记录每个变更工具的工作项、执行状态和结果证据；批准后状态依次进入 executing、verifying、completed（失败则保留失败证据）。模型超时或协议错误只结束当前回合，不会销毁会话进程；流式断线会保留已渲染的文本并仅在尚未输出任何增量时重试。`SEECODER_TASK_TIMEOUT_S` 为整个 Agent 回合设置上限，命令和模型请求仍保留各自的更小超时。桌面端还会对同一会话的重复点击做短时幂等去重，避免一条输入被写入两次。
+桌面端和 CLI 的 `chat` 是长生命周期多轮会话。快照当前为 v3：加载时会校验版本、消息角色、工具调用顺序、字段类型、未完成审批和 TaskPlan 状态；旧 v1/v2 快照会迁移为 v3。Plan 模式会为每次提案建立稳定计划 ID，记录每个变更工具的工作项、执行状态和结果证据；批准后状态依次进入 executing、verifying、completed（失败保留失败证据，拒绝或停止进入 cancelled）。模型超时或协议错误只结束当前回合，不会销毁会话进程；流式断线会保留已渲染的文本并仅在尚未输出任何增量时重试。`SEECODER_TASK_TIMEOUT_S` 为整个 Agent 回合设置上限，命令和模型请求仍保留各自的更小超时。桌面端还会对同一会话的重复点击做短时幂等去重，避免一条输入被写入两次。
 
 `Ask` 模式下，带写入能力的调用会进入可持久化的 `awaiting_approval` 状态，而不是阻塞在工具函数中。会话重启后仍能继续批准或拒绝。桌面事件流使用协议 v3，每条事件均携带 `session_id`、`run_id`、单调递增的 `sequence` 和协议版本，客户端会忽略重复或倒序事件。
 
@@ -268,7 +268,7 @@ UV_CACHE_DIR=/private/tmp/seecoder-uv-cache \
 (cd desktop/electron && npm test)
 ```
 
-最近一次离线回归基线为 Python 后端 **109/109**，Electron 端测试全部通过；SwiftUI 原生端源码可通过 Swift parser 检查，完整构建应在与 macOS SDK 匹配的 Xcode 工具链中执行。会话快照采用原子替换并在原生桌面端自动追加 `--resume`，Git 差异同时覆盖 staged、unstaged 与 untracked 文件，ToolRegistry 在本地统一执行 JSON Schema 子集校验和能力分类。真实模型、网络搜索和宿主命令的结果取决于本机配置，不能用离线 fake model 代替声明为端到端验证。
+最近一次离线回归基线为 Python 后端 **110/110**，Electron 端测试全部通过；SwiftUI 原生端源码可通过 Swift parser 检查，完整构建应在与 macOS SDK 匹配的 Xcode 工具链中执行。会话快照采用原子替换并在原生桌面端自动追加 `--resume`，Git 差异同时覆盖 staged、unstaged 与 untracked 文件，ToolRegistry 在本地统一执行 JSON Schema 子集校验和能力分类。真实模型、网络搜索和宿主命令的结果取决于本机配置，不能用离线 fake model 代替声明为端到端验证。
 
 ## CI/CD 流水线
 

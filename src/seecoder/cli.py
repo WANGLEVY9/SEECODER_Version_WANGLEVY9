@@ -345,6 +345,8 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
                     emitter.emit("turn_outcome", _outcome_data(executed))
                 else:
                     _print_outcome(executed, quiet=args.quiet)
+            else:
+                conversation.cancel_plan()
         while outcome.state == RunState.AWAITING_APPROVAL:
             prompt = "Approve the requested local action? (y/N): "
             if sys.stdin.isatty():

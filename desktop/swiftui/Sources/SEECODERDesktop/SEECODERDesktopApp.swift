@@ -393,7 +393,8 @@ final class DesktopStore: ObservableObject {
       }
       let completed = items.filter { $0.status == "completed" }.count
       let status = data["status"] as? String ?? "proposed"
-      addTimeline("计划状态：\(status)", detail: "\(completed)/\(items.count) 步已完成", tone: status == "failed" ? .failure : status == "completed" ? .success : .running)
+      addTimeline("计划状态：\(status)", detail: "\(completed)/\(items.count) 步已完成", tone: ["failed", "cancelled"].contains(status) ? .failure : status == "completed" ? .success : .running)
+      if status == "cancelled" { pendingApproval = nil; isRunning = false }
     case "token": if let text = data["text"] as? String { appendStreaming(text) }
     case "reasoning": if let text = data["text"] as? String, !text.isEmpty { addTimeline("模型思考", detail: text, tone: .info) }
     case "run_started":
