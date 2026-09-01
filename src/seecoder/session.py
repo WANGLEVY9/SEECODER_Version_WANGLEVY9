@@ -11,12 +11,13 @@ from pathlib import Path
 from seecoder.approval import Policy
 from seecoder.config import Settings
 from seecoder.model_client import ModelClient
+from seecoder.plans import PlanStatus, TaskPlan
 from seecoder.runner import AgentRunner, DEFAULT_SYSTEM_PROMPT
 from seecoder.trace import NullTraceWriter, TraceWriter
 from seecoder.types import ChatMessage, Mode, RunOutcome, RunState, ToolCall, Usage
 
 
-SNAPSHOT_VERSION = 2
+SNAPSHOT_VERSION = 3
 _MESSAGE_ROLES = {"system", "user", "assistant", "tool"}
 
 
@@ -116,13 +117,14 @@ class Conversation:
         self.system_prompt = system_prompt
         self.current_mode = mode
         self.approver = approver
+        self._task_plan: TaskPlan | None = None
 
         self.runner = AgentRunner.for_workspace(
             settings=settings,
             model_client=model_client,
             workspace=workspace,
             trace=trace,
-            event_sink=event_sink,
+            event_sink=self._handle_runner_event,
             mode=mode,
             approver=approver,
             stream_sink=stream_sink,
@@ -148,6 +150,10 @@ class Conversation:
     @property
     def pending_calls(self) -> tuple[ToolCall, ...]:
         return self._pending_calls
+
+    @property
+    def task_plan(self) -> TaskPlan | None:
+        return self._task_plan
 
     def start(self, task: str) -> RunOutcome:
         """Begin a fresh conversation with the given task."""
@@ -187,6 +193,9 @@ class Conversation:
         self.current_mode = Mode.AUTO
         self.runner.mode = Mode.AUTO
         self.runner.policy = Policy(Mode.AUTO, read_only_resolver=self.runner.tools.is_read_only)
+        if self._task_plan is not None:
+            self._task_plan.transition(PlanStatus.EXECUTING)
+            self._emit_plan_state()
         self._messages.append(
             ChatMessage(role="user", content="The proposed plan is approved. Execute it now.")
         )
@@ -215,6 +224,7 @@ class Conversation:
                 {"id": call.id, "name": call.name, "arguments": call.arguments}
                 for call in self._pending_calls
             ],
+            "task_plan": self._task_plan.to_dict() if self._task_plan is not None else None,
         }
 
     def save(self, path: Path) -> Path:
@@ -257,6 +267,7 @@ class Conversation:
             _tool_call_from_dict(item, label=f"pending_approval[{index}]")
             for index, item in enumerate(data["pending_approval"])
         )
+        self._task_plan = TaskPlan.from_dict(data["task_plan"]) if data["task_plan"] is not None else None
         if self._pending_calls and self.current_mode != Mode.ASK:
             raise SnapshotValidationError("Only ASK-mode snapshots may contain pending approvals.")
         self.runner.mode = self.current_mode
@@ -307,6 +318,42 @@ class Conversation:
         outcome = self.runner.run_messages(self._messages)
         return self._consume_outcome(outcome)
 
+    def _handle_runner_event(self, event: str, data: dict) -> None:
+        if event == "plan_proposal":
+            plan_id = str(data.get("plan_id") or "")
+            if self._task_plan is None or (plan_id and self._task_plan.id != plan_id):
+                task = next((message.content or "" for message in reversed(self._messages) if message.role == "user"), "")
+                self._task_plan = TaskPlan.from_steps(task, (), plan_id=plan_id or None)
+            from seecoder.types import PlanStep
+            self._task_plan.add_step(PlanStep(
+                tool=str(data.get("name") or "unknown"),
+                arguments=dict(data.get("arguments") or {}),
+                description=str(data.get("description") or data.get("name") or "Plan step"),
+            ))
+        elif event == "tool_dispatch" and self._task_plan is not None and self._task_plan.status == PlanStatus.EXECUTING:
+            for call in data.get("calls") or ():
+                if isinstance(call, dict):
+                    self._task_plan.mark_tool_started(str(call.get("name") or ""))
+            self._emit_plan_state()
+        elif event == "tool_result" and self._task_plan is not None and self._task_plan.status == PlanStatus.EXECUTING:
+            self._task_plan.mark_tool_result(
+                str(data.get("name") or ""), bool(data.get("ok")),
+                str(data.get("error") or ("completed" if data.get("ok") else "failed")),
+            )
+            self._emit_plan_state()
+        if self.event_sink is not None:
+            self.event_sink(event, data)
+
+    def _emit_plan_state(self) -> None:
+        if self.event_sink is None or self._task_plan is None:
+            return
+        self.event_sink("plan_state", {
+            "plan_id": self._task_plan.id,
+            "status": self._task_plan.status.value,
+            "task": self._task_plan.task,
+            "items": self._task_plan.to_dict()["items"],
+        })
+
     def _consume_outcome(self, outcome: RunOutcome) -> RunOutcome:
         # A failed provider request does not produce an assistant message, so
         # the next user turn would otherwise be serialized as two adjacent
@@ -324,6 +371,24 @@ class Conversation:
                                 if outcome.partial_text else "") + outcome.final_text),
                 )
             )
+        if outcome.plan and self._task_plan is None:
+            self._task_plan = TaskPlan.from_steps(
+                next((message.content or "" for message in reversed(self._messages) if message.role == "user"), ""),
+                outcome.plan,
+                plan_id=outcome.plan_id,
+            )
+        if self._task_plan is not None:
+            if outcome.state == RunState.PLAN_PROPOSED:
+                self._task_plan.transition(PlanStatus.PROPOSED)
+                self._emit_plan_state()
+            elif outcome.state == RunState.FINAL and self._task_plan.status == PlanStatus.EXECUTING:
+                self._task_plan.transition(PlanStatus.VERIFYING)
+                self._emit_plan_state()
+                self._task_plan.transition(PlanStatus.COMPLETED)
+                self._emit_plan_state()
+            elif outcome.state not in {RunState.AWAITING_APPROVAL, RunState.PLAN_PROPOSED} and self._task_plan.status in {PlanStatus.EXECUTING, PlanStatus.VERIFYING}:
+                self._task_plan.transition(PlanStatus.FAILED, evidence=outcome.final_text)
+                self._emit_plan_state()
         # A local root rename updates the shared boundary. Persist that new
         # path so resume-after-restart does not point at the old directory.
         if self.runner.workspace_boundary is not None:
@@ -339,11 +404,12 @@ class Conversation:
         self._total_usage = Usage(0, 0, 0)
         self._total_steps = 0
         self._pending_calls = ()
+        self._task_plan = None
         self.current_mode = self.runner.mode
 
     @staticmethod
     def _validate_snapshot(data: dict[str, object]) -> None:
-        required = {"version", "mode", "workspace", "usage", "steps", "messages", "pending_approval"}
+        required = {"version", "mode", "workspace", "usage", "steps", "messages", "pending_approval", "task_plan"}
         if set(data) != required:
             raise SnapshotValidationError("Session snapshot has unsupported or missing top-level fields.")
         if data["version"] != SNAPSHOT_VERSION:
@@ -360,6 +426,11 @@ class Conversation:
             raise SnapshotValidationError("Session snapshot steps must be a non-negative integer.")
         if not isinstance(data["messages"], list) or not isinstance(data["pending_approval"], list):
             raise SnapshotValidationError("Session snapshot messages and pending_approval must be lists.")
+        if data["task_plan"] is not None:
+            try:
+                TaskPlan.from_dict(data["task_plan"])
+            except (TypeError, ValueError) as error:
+                raise SnapshotValidationError("Session snapshot task_plan is invalid.") from error
         usage = data["usage"]
         if not isinstance(usage, dict) or set(usage) != {"prompt_tokens", "completion_tokens", "total_tokens"}:
             raise SnapshotValidationError("Session snapshot usage fields are invalid.")
@@ -386,14 +457,18 @@ class Conversation:
 
     @staticmethod
     def _upgrade_snapshot(data: dict[str, object]) -> dict[str, object]:
-        """Migrate the former v1 durable format before strict v2 validation."""
+        """Migrate v1/v2 durable formats before strict v3 validation."""
 
-        if data.get("version") != 1:
+        if data.get("version") not in {1, 2}:
             return data
         legacy_fields = {"version", "mode", "workspace", "usage", "steps", "messages"}
+        if data.get("version") == 2:
+            legacy_fields.add("pending_approval")
         if set(data) != legacy_fields:
             raise SnapshotValidationError("Legacy session snapshot has unsupported or missing fields.")
         upgraded = dict(data)
         upgraded["version"] = SNAPSHOT_VERSION
-        upgraded["pending_approval"] = []
+        if data.get("version") == 1:
+            upgraded["pending_approval"] = []
+        upgraded["task_plan"] = None
         return upgraded

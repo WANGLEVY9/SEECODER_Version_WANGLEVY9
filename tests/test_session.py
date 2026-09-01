@@ -11,6 +11,7 @@ from typing import Any
 
 from seecoder.config import Settings
 from seecoder.model_client import ModelClientError
+from seecoder.plans import PlanStatus, WorkItemStatus
 from seecoder.session import Conversation, SnapshotValidationError
 from seecoder.types import Mode, ModelResponse, RunState, ToolCall
 
@@ -93,17 +94,34 @@ class ConversationTests(unittest.TestCase):
                 ModelResponse("Created x.txt."),
             ]
         )
+        events: list[tuple[str, dict[str, Any]]] = []
         conversation = Conversation(
-            settings=self.settings, model_client=model, workspace=self.workspace, mode=Mode.PLAN
+            settings=self.settings, model_client=model, workspace=self.workspace, mode=Mode.PLAN,
+            event_sink=lambda event, data: events.append((event, data)),
         )
         planned = conversation.start("Create x.txt.")
         self.assertEqual(planned.state, RunState.PLAN_PROPOSED)
         self.assertEqual(planned.plan[0].tool, "write_file")
+        self.assertIsNotNone(conversation.task_plan)
+        self.assertEqual(conversation.task_plan.status, PlanStatus.PROPOSED)
+        self.assertEqual(conversation.task_plan.items[0].status, WorkItemStatus.PENDING)
         # The file must NOT have been created during plan mode.
         self.assertFalse((self.workspace / "x.txt").exists())
         executed = conversation.approve_plan()
         self.assertEqual(executed.state, RunState.FINAL)
         self.assertEqual((self.workspace / "x.txt").read_text(encoding="utf-8"), "hi")
+        self.assertEqual(conversation.task_plan.status, PlanStatus.COMPLETED)
+        self.assertEqual(conversation.task_plan.items[0].status, WorkItemStatus.COMPLETED)
+        plan_states = [data["status"] for event, data in events if event == "plan_state"]
+        self.assertEqual(plan_states[0], "proposed")
+        self.assertEqual(plan_states[-2:], ["verifying", "completed"])
+        self.assertIn("executing", plan_states)
+
+        snapshot = self.workspace / "plan.json"
+        conversation.save(snapshot)
+        loaded = Conversation.load(snapshot, settings=self.settings, model_client=ScriptedModel([]), workspace=self.workspace)
+        self.assertEqual(loaded.task_plan.id, conversation.task_plan.id)
+        self.assertEqual(loaded.task_plan.status, PlanStatus.COMPLETED)
 
     def test_conversation_save_and_load_round_trips(self) -> None:
         model = ScriptedModel([ModelResponse("First answer."), ModelResponse("Second answer.")])

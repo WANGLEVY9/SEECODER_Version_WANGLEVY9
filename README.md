@@ -68,7 +68,8 @@ flowchart LR
     A --> T[ToolRegistry\nschema、参数、权限]
     T --> L[本地文件、Git、受限命令]
     L --> R
-    R --> E[JSONL 事件、trace、会话快照]
+    R --> P[TaskPlan / WorkItem 状态]
+    P --> E[JSONL 事件、trace、会话快照]
     E --> D[SwiftUI / Electron 兼容桌面端]
 ```
 
@@ -85,7 +86,7 @@ flowchart LR
 | 模型交互 | 原生 tool-calling、reasoning 内容保留、流式增量、usage 统计、有限重试 | 只适配协议，不托管代码执行 |
 | 上下文与记忆 | 历史裁剪、上下文压缩、`SEECODER.md`/`AGENTS.md` 项目指引、Skills 加载 | 指引不能扩大工具权限 |
 | 可观测性 | 本地 JSONL 事件、脱敏 trace、工具成功/失败、审批和终止状态 | trace 默认写到工作区外 |
-| 变更审阅基础 | 写入前基线、前后 SHA-256、工作区外 ChangeSet journal、哈希冲突保护 | 当前已记录并展示 ChangeSet；桌面回退入口仍在下一阶段 |
+| 变更审阅基础 | 写入前基线、前后 SHA-256、工作区外 ChangeSet journal、哈希冲突保护 | SwiftUI/Electron 均提供只读审阅与显式回退 |
 | 桌面端 | SwiftUI 三栏会话界面、实时轨迹、审阅 diff、工具/Skills 面板、可调整布局 | Electron 仅保留兼容实现 |
 
 ## 自研实现与关键决策
@@ -100,7 +101,8 @@ flowchart LR
 | `model_client.py` | 将本地消息和 schema 转为普通 API 请求，解析 `tool_calls`、reasoning、流式 delta 与 usage | 官方客户端只是 HTTP 协议适配器，不拥有 Agent 控制权 |
 | `context.py` | token 预算、历史裁剪、项目指引注入、上下文压缩 | 避免把无限历史直接交给模型 |
 | `approval.py` | `Ask`/`Plan`/`Auto` 的读写策略、批准请求与危险操作判定 | 策略显式存在，不依赖供应商托管权限 |
-| `session.py` | 多轮消息、快照保存、恢复、usage 与步骤状态 | 关闭桌面端后仍可恢复本地会话 |
+| `session.py` | 多轮消息、TaskPlan/WorkItem 状态、快照保存、恢复、usage 与步骤状态 | 关闭桌面端后仍可恢复本地会话和未完成计划 |
+| `plans.py` | 计划身份、工作项状态机、工具结果证据和严格序列化 | 让 Plan 不再只是一次性文本，而是可恢复的执行记录 |
 | `trace.py` | 脱敏 JSONL 审计事件、事件顺序和错误记录 | 便于调试桌面端和复现任务 |
 | `desktop/swiftui/` | 原生窗口、会话列表、输入、流式轨迹、环境信息、审阅面板 | UI 只展示本地协议，不重新实现执行内核 |
 
@@ -183,7 +185,7 @@ uv run seecoder chat \
 
 可用 `uv run seecoder --help`、`uv run seecoder run --help` 和 `uv run seecoder chat --help` 查看参数。`--resume` 恢复已有快照，`--event-json` 输出桌面端使用的本地 JSONL 事件，`--trace-dir` 指定工作区外的审计目录，`--max-steps` 限制单次循环步数。
 
-桌面端和 CLI 的 `chat` 是长生命周期多轮会话。快照当前为 v2：加载时会校验版本、消息角色、工具调用顺序、字段类型和未完成审批；旧 v1 快照会迁移为 v2。模型超时或协议错误只结束当前回合，不会销毁会话进程；流式断线会保留已渲染的文本并仅在尚未输出任何增量时重试。`SEECODER_TASK_TIMEOUT_S` 为整个 Agent 回合设置上限，命令和模型请求仍保留各自的更小超时。桌面端还会对同一会话的重复点击做短时幂等去重，避免一条输入被写入两次。
+桌面端和 CLI 的 `chat` 是长生命周期多轮会话。快照当前为 v3：加载时会校验版本、消息角色、工具调用顺序、字段类型、未完成审批和 TaskPlan 状态；旧 v1/v2 快照会迁移为 v3。Plan 模式会为每次提案建立稳定计划 ID，记录每个变更工具的工作项、执行状态和结果证据；批准后状态依次进入 executing、verifying、completed（失败则保留失败证据）。模型超时或协议错误只结束当前回合，不会销毁会话进程；流式断线会保留已渲染的文本并仅在尚未输出任何增量时重试。`SEECODER_TASK_TIMEOUT_S` 为整个 Agent 回合设置上限，命令和模型请求仍保留各自的更小超时。桌面端还会对同一会话的重复点击做短时幂等去重，避免一条输入被写入两次。
 
 `Ask` 模式下，带写入能力的调用会进入可持久化的 `awaiting_approval` 状态，而不是阻塞在工具函数中。会话重启后仍能继续批准或拒绝。桌面事件流使用协议 v3，每条事件均携带 `session_id`、`run_id`、单调递增的 `sequence` 和协议版本，客户端会忽略重复或倒序事件。
 
@@ -216,6 +218,7 @@ uv run seecoder chat \
 - 固定底部输入框、流式 Markdown 消息、模型思考/工具轨迹和停止按钮。
 - 运行状态、审批操作、环境信息、Git 分支与变更统计。
 - 已编辑文件卡片，点击后进入本地 diff 审阅；Git 工作区使用真实 diff，非 Git 工作区使用持久化的 Agent 编辑记录和只读当前内容回退，因此不会因缺少 Git 基线而丢失变更提示。
+- 任务计划卡片：显示计划状态、每个工作项的工具、完成/失败状态和本地执行证据；状态通过同一条 JSONL 事件流同步到 SwiftUI 与 Electron。
 - 工具/MCP 注册信息与项目 Skills 状态面板。
 - 可调整的会话、内容、审阅三栏布局；关闭窗口后可从本地会话快照恢复。
 
@@ -265,7 +268,7 @@ UV_CACHE_DIR=/private/tmp/seecoder-uv-cache \
 (cd desktop/electron && npm test)
 ```
 
-最近一次离线回归基线为 Python 后端 **101/101**，Electron 端测试全部通过；SwiftUI 原生端源码可通过 Swift parser 检查，完整构建应在与 macOS SDK 匹配的 Xcode 工具链中执行。会话快照采用原子替换并在原生桌面端自动追加 `--resume`，Git 差异同时覆盖 staged、unstaged 与 untracked 文件，ToolRegistry 在本地统一执行 JSON Schema 子集校验和能力分类。真实模型、网络搜索和宿主命令的结果取决于本机配置，不能用离线 fake model 代替声明为端到端验证。
+最近一次离线回归基线为 Python 后端 **109/109**，Electron 端测试全部通过；SwiftUI 原生端源码可通过 Swift parser 检查，完整构建应在与 macOS SDK 匹配的 Xcode 工具链中执行。会话快照采用原子替换并在原生桌面端自动追加 `--resume`，Git 差异同时覆盖 staged、unstaged 与 untracked 文件，ToolRegistry 在本地统一执行 JSON Schema 子集校验和能力分类。真实模型、网络搜索和宿主命令的结果取决于本机配置，不能用离线 fake model 代替声明为端到端验证。
 
 ## CI/CD 流水线
 
@@ -291,6 +294,7 @@ src/seecoder/
 ├── model_client.py    # OpenAI-compatible 协议适配
 ├── context.py         # 上下文预算、裁剪和项目指引
 ├── approval.py        # Ask / Plan / Auto 策略
+├── plans.py           # 持久化 TaskPlan/WorkItem 状态机
 ├── session.py         # 多轮会话与快照
 ├── trace.py           # 脱敏 JSONL 事件
 └── tools/             # 本地工具、注册表和工作区边界
@@ -307,7 +311,7 @@ demo_workspace/        # 可复现实例工作区
 
 ## 路线图
 
-已完成的基础能力包括本地 Agent 循环、工具注册与执行、三种模式、上下文和会话持久化、JSONL 事件、文件/Git 工具、SwiftUI 桌面端、diff 审阅和项目 Skills。
+已完成的基础能力包括本地 Agent 循环、工具注册与执行、三种模式、上下文和会话持久化、可恢复 TaskPlan、JSONL 事件、文件/Git 工具、SwiftUI 桌面端、diff 审阅和项目 Skills。
 
 后续社区贡献优先级：
 

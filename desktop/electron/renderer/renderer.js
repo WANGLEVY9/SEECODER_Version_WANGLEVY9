@@ -63,7 +63,7 @@ function loadMode() {
   return ["ask", "plan", "auto"].includes(value) ? value : "auto";
 }
 function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.sessions)); }
-function makeSession(workspace = defaultWorkspace) { return { id: crypto.randomUUID(), title: '新对话', workspace, createdAt: Date.now(), updatedAt: Date.now(), messages: [], environment: null, localChanges: [], changesets: [] }; }
+function makeSession(workspace = defaultWorkspace) { return { id: crypto.randomUUID(), title: '新对话', workspace, createdAt: Date.now(), updatedAt: Date.now(), messages: [], environment: null, localChanges: [], changesets: [], taskPlan: null }; }
 function current() { return state.sessions.find((session) => session.id === state.currentId); }
 function ensureSession() { if (!state.sessions.length) state.sessions.push(makeSession()); if (!current()) state.currentId = state.sessions[0].id; persist(); }
 function escapeText(value) { const element = document.createElement('span'); element.textContent = value; return element.innerHTML; }
@@ -141,6 +141,13 @@ function changeCard(environment, session) {
   const setHint = sets.length ? '<small class="change-source">本轮已记录 ' + sets.length + ' 个 ChangeSet，可在右侧审阅</small>' : '';
   return '<section class="change-card"><header><div class="change-icon">▣</div><div><strong>已编辑 ' + filesForCard.length + ' 个文件</strong><small><b>+' + totals.added + '</b> −' + totals.deleted + '</small>' + sourceHint + setHint + '</div></header><ul>' + files + (remaining > 0 ? '<li class="more-files">另有 ' + remaining + ' 个文件</li>' : '') + '</ul></section>';
 }
+function planCard(session) {
+  const plan = session?.taskPlan;
+  if (!plan || !Array.isArray(plan.items) || !plan.items.length) return '';
+  const labels = { pending: '待执行', running: '执行中', completed: '已完成', failed: '失败', skipped: '已跳过' };
+  const items = plan.items.map((item) => '<li class="plan-item ' + escapeText(item.status || 'pending') + '"><span class="plan-item-status">' + escapeText(labels[item.status] || item.status || '待执行') + '</span><div><strong>' + escapeText(item.description || item.tool || '本地操作') + '</strong><small>' + escapeText(item.tool || '') + (item.evidence ? ' · ' + escapeText(item.evidence) : '') + '</small></div></li>').join('');
+  return '<section class="plan-card"><header><div class="plan-icon">☷</div><div><strong>任务计划</strong><small>' + escapeText(plan.status || 'proposed') + '</small></div></header><ol>' + items + '</ol></section>';
+}
 function renderWelcome() {
   const session = current();
   if (!session?.workspace) {
@@ -158,7 +165,7 @@ function renderConversation() {
   liveAgentEl = null; liveAgentText = '';
   const session = current(); $('#session-title').textContent = session.title; $('#workspace-label').textContent = session.workspace || '尚未选择本地开发区域';
   if (!session.messages.length) { renderWelcome(); return; }
-  conversation.innerHTML = session.messages.map((message) => { const label = { user: '你', agent: 'SEECODER', system: '本地状态' }[message.role] || '本地状态'; const body = message.role === 'agent' ? markdownToHtml(message.content) : escapeText(message.content); return '<article class="message ' + message.role + '"><div class="message-meta"><span class="dot"></span>' + label + '</div><div class="message-body' + (message.role === 'agent' ? ' markdown' : '') + '">' + body + '</div></article>'; }).join('') + changeCard(session.environment, session);
+  conversation.innerHTML = session.messages.map((message) => { const label = { user: '你', agent: 'SEECODER', system: '本地状态' }[message.role] || '本地状态'; const body = message.role === 'agent' ? markdownToHtml(message.content) : escapeText(message.content); return '<article class="message ' + message.role + '"><div class="message-meta"><span class="dot"></span>' + label + '</div><div class="message-body' + (message.role === 'agent' ? ' markdown' : '') + '">' + body + '</div></article>'; }).join('') + planCard(session) + changeCard(session.environment, session);
   conversation.querySelectorAll('[data-diff-path]').forEach((button) => button.addEventListener('click', () => openReview(button.dataset.diffPath)));
   conversation.scrollTop = conversation.scrollHeight;
 }
@@ -428,6 +435,16 @@ function handleRunnerEvent(payload) {
   }
   if (event === 'changeset_error') {
     addActivity('ChangeSet 记录警告', data?.message || '本次变更无法完整记录。', 'error');
+    return;
+  }
+  if (event === 'plan_state') {
+    const session = current();
+    if (session && data?.plan_id) {
+      session.taskPlan = { id: data.plan_id, task: data.task || '', status: data.status || 'proposed', items: Array.isArray(data.items) ? data.items : [] };
+      session.updatedAt = Date.now(); persist(); renderConversation();
+      const completed = session.taskPlan.items.filter((item) => item.status === 'completed').length;
+      addActivity('计划状态：' + session.taskPlan.status, completed + '/' + session.taskPlan.items.length + ' 步已完成', session.taskPlan.status === 'failed' ? 'error' : session.taskPlan.status === 'completed' ? 'ok' : 'running');
+    }
     return;
   }
   if (event === 'usage') { state.usageTotal = data?.total_tokens || state.usageTotal; setCost(state.usageTotal); return; }

@@ -49,10 +49,24 @@ struct LocalChange: Codable, Hashable {
   var deleted: Int
 }
 
+struct WorkItemModel: Codable, Hashable {
+  var id: String
+  var description: String
+  var tool: String
+  var status: String
+  var evidence: String
+}
+struct TaskPlanModel: Codable, Hashable {
+  var id: String
+  var task: String
+  var status: String
+  var items: [WorkItemModel]
+}
+
 struct SessionModel: Identifiable, Codable, Hashable {
-  var id = UUID(); var title = "新对话"; var workspace = ""; var messages: [ChatMessage] = []; var updatedAt = Date.now; var localChanges: [LocalChange] = []
+  var id = UUID(); var title = "新对话"; var workspace = ""; var messages: [ChatMessage] = []; var updatedAt = Date.now; var localChanges: [LocalChange] = []; var taskPlan: TaskPlanModel?
   init(workspace: String = "") { self.workspace = workspace }
-  enum CodingKeys: String, CodingKey { case id, title, workspace, messages, updatedAt, localChanges }
+  enum CodingKeys: String, CodingKey { case id, title, workspace, messages, updatedAt, localChanges, taskPlan }
   init(from decoder: Decoder) throws {
     let values = try decoder.container(keyedBy: CodingKeys.self)
     id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
@@ -61,6 +75,7 @@ struct SessionModel: Identifiable, Codable, Hashable {
     messages = try values.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? []
     updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .now
     localChanges = try values.decodeIfPresent([LocalChange].self, forKey: .localChanges) ?? []
+    taskPlan = try values.decodeIfPresent(TaskPlanModel.self, forKey: .taskPlan)
   }
 }
 struct DesktopPersistence: Codable {
@@ -364,6 +379,21 @@ final class DesktopStore: ObservableObject {
       addTimeline("ChangeSet 已记录", detail: files.isEmpty ? (data["tool"] as? String ?? "目录操作") : files, tone: .success)
     case "changeset_error":
       addTimeline("ChangeSet 记录警告", detail: data["message"] as? String ?? "本次变更无法完整记录", tone: .warning)
+    case "plan_state":
+      let items = (data["items"] as? [[String: Any]] ?? []).map { item in
+        WorkItemModel(id: item["id"] as? String ?? UUID().uuidString,
+                      description: item["description"] as? String ?? item["tool"] as? String ?? "本地操作",
+                      tool: item["tool"] as? String ?? "",
+                      status: item["status"] as? String ?? "pending",
+                      evidence: item["evidence"] as? String ?? "")
+      }
+      if let index = currentIndex, let planID = data["plan_id"] as? String {
+        sessions[index].taskPlan = TaskPlanModel(id: planID, task: data["task"] as? String ?? "", status: data["status"] as? String ?? "proposed", items: items)
+        sessions[index].updatedAt = .now; save()
+      }
+      let completed = items.filter { $0.status == "completed" }.count
+      let status = data["status"] as? String ?? "proposed"
+      addTimeline("计划状态：\(status)", detail: "\(completed)/\(items.count) 步已完成", tone: status == "failed" ? .failure : status == "completed" ? .success : .running)
     case "token": if let text = data["text"] as? String { appendStreaming(text) }
     case "reasoning": if let text = data["text"] as? String, !text.isEmpty { addTimeline("模型思考", detail: text, tone: .info) }
     case "run_started":
@@ -698,7 +728,7 @@ private struct ProjectSection: View {
 
 struct Conversation: View {
   @EnvironmentObject var store: DesktopStore
-  var body: some View { VStack(spacing: 0) { HStack { VStack(alignment: .leading, spacing: 3) { Text(store.current?.title ?? "新对话").font(.headline).foregroundStyle(Color.ink); Text(store.current?.workspace.isEmpty == false ? store.current!.workspace : "尚未选择本地开发区域").font(.caption).foregroundStyle(Color.muted).lineLimit(1) }; Spacer(); Menu { Button("选择其他工作区", action: store.chooseWorkspace); Button("重命名当前工作区", action: store.openRenameCurrentWorkspace).disabled(!store.hasWorkspace || store.isRunning) } label: { Label("工作区", systemImage: "folder") }.menuStyle(.borderlessButton); Button("选择工作区", action: store.chooseWorkspace).buttonStyle(.bordered) }.padding(.horizontal, 22).frame(height: 60); Divider(); ScrollViewReader { proxy in ScrollView { Group { if store.current?.messages.isEmpty != false { Onboarding() } else { LazyVStack(alignment: .leading, spacing: 18) { ForEach(store.current?.messages ?? []) { message in MessageBubble(message: message) }; if store.pendingApproval != nil { ApprovalCard() }; if !store.timeline.isEmpty { ExecutionTimeline(compact: false) }; ChangeSummary() } } }.frame(maxWidth: 720, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity, alignment: .center) }.onChange(of: store.timeline.count) { _, _ in proxy.scrollTo("execution-timeline", anchor: .bottom) }.onChange(of: store.pendingApproval?.id) { _, id in if id != nil { proxy.scrollTo("approval-card", anchor: .bottom) } }.onChange(of: store.current?.messages.count) { _, _ in if let id = store.current?.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } } }; Composer() }.background(Color.canvas) }
+  var body: some View { VStack(spacing: 0) { HStack { VStack(alignment: .leading, spacing: 3) { Text(store.current?.title ?? "新对话").font(.headline).foregroundStyle(Color.ink); Text(store.current?.workspace.isEmpty == false ? store.current!.workspace : "尚未选择本地开发区域").font(.caption).foregroundStyle(Color.muted).lineLimit(1) }; Spacer(); Menu { Button("选择其他工作区", action: store.chooseWorkspace); Button("重命名当前工作区", action: store.openRenameCurrentWorkspace).disabled(!store.hasWorkspace || store.isRunning) } label: { Label("工作区", systemImage: "folder") }.menuStyle(.borderlessButton); Button("选择工作区", action: store.chooseWorkspace).buttonStyle(.bordered) }.padding(.horizontal, 22).frame(height: 60); Divider(); ScrollViewReader { proxy in ScrollView { Group { if store.current?.messages.isEmpty != false { Onboarding() } else { LazyVStack(alignment: .leading, spacing: 18) { ForEach(store.current?.messages ?? []) { message in MessageBubble(message: message) }; if let plan = store.current?.taskPlan { PlanSummary(plan: plan) }; if store.pendingApproval != nil { ApprovalCard() }; if !store.timeline.isEmpty { ExecutionTimeline(compact: false) }; ChangeSummary() } } }.frame(maxWidth: 720, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity, alignment: .center) }.onChange(of: store.timeline.count) { _, _ in proxy.scrollTo("execution-timeline", anchor: .bottom) }.onChange(of: store.pendingApproval?.id) { _, id in if id != nil { proxy.scrollTo("approval-card", anchor: .bottom) } }.onChange(of: store.current?.messages.count) { _, _ in if let id = store.current?.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } } }; Composer() }.background(Color.canvas) }
 }
 
 struct Onboarding: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(spacing: 12) { Spacer(minLength: 48); Image("seecoder-logo", bundle: .module).resizable().frame(width: 50, height: 50).clipShape(RoundedRectangle(cornerRadius: 15)); Text("开始一个新项目").font(.system(size: 27, weight: .bold)).foregroundStyle(Color.ink); Text("选择一个本地文件夹作为项目，或创建名为“新项目”的文件夹。\n项目下可以继续创建多个独立会话。").font(.system(size: 14)).multilineTextAlignment(.center).foregroundStyle(Color.muted); HStack { Button("选择本地项目", action: store.chooseWorkspace).buttonStyle(.borderedProminent); Button("新建项目", action: store.openCreateWorkspace).buttonStyle(.bordered) }; Spacer(minLength: 28) }.frame(maxWidth: .infinity, minHeight: 260) } }
@@ -784,6 +814,7 @@ struct ExecutionTimeline: View {
   private func color(_ tone: TimelineEvent.Tone) -> Color { switch tone { case .running: .brandBlue; case .success: .brandGreen; case .warning: .brandAmber; case .failure: .red; case .info: .muted } }
 }
 struct ChangeSummary: View { @EnvironmentObject var store: DesktopStore; var body: some View { let files = store.changedFiles(); if !files.isEmpty { let added = files.reduce(0) { $0 + $1.1 }; let deleted = files.reduce(0) { $0 + $1.2 }; VStack(alignment: .leading, spacing: 8) { HStack { Text("已编辑 \(files.count) 个文件").font(.headline); Spacer(); Text("+\(added) −\(deleted)").font(.caption).foregroundStyle(.secondary) }; if (store.current?.localChanges.count ?? 0) > 0 { Text("本轮 Agent 编辑记录（工作区未检测到 Git 基线时仍可用）").font(.caption2).foregroundStyle(Color.muted) }; ForEach(files, id: \.0) { file in Button { store.inspectDiff(file.0) } label: { HStack { Text(file.0).font(.system(.caption, design: .monospaced)); Spacer(); Text("+\(file.1) −\(file.2)").font(.caption).foregroundStyle(.secondary) }.padding(.vertical, 5) }.buttonStyle(.plain) } }.padding(15).frame(maxWidth: 760).background(Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) } } }
+struct PlanSummary: View { let plan: TaskPlanModel; var body: some View { VStack(alignment: .leading, spacing: 9) { HStack { Label("任务计划", systemImage: "list.bullet.rectangle").font(.headline); Spacer(); Text(plan.status).font(.caption).foregroundStyle(.secondary) }; ForEach(plan.items, id: \.id) { item in HStack(alignment: .top, spacing: 8) { Image(systemName: item.status == "completed" ? "checkmark.circle.fill" : item.status == "failed" ? "xmark.octagon.fill" : "circle").foregroundStyle(item.status == "completed" ? Color.brandGreen : item.status == "failed" ? Color.red : Color.brandBlue); VStack(alignment: .leading, spacing: 2) { Text(item.description).font(.system(size: 13, weight: .semibold)); Text(item.tool + (item.evidence.isEmpty ? "" : " · " + item.evidence)).font(.caption).foregroundStyle(Color.muted) } } } }.padding(15).frame(maxWidth: 760).background(Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) } }
 struct Composer: View {
     @EnvironmentObject var store: DesktopStore
     @FocusState private var isFocused: Bool

@@ -155,6 +155,7 @@ class RunOutcome:
     steps: int
     trace_path: str | None = None
     plan: tuple[PlanStep, ...] = ()
+    plan_id: str | None = None
     usage: Usage | None = None
     mode: Mode = Mode.AUTO
     # A persisted ASK-mode continuation.  The assistant tool-call message is

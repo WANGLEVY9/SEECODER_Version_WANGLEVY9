@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -181,6 +182,7 @@ class AgentRunner:
         self.workspace_boundary: WorkspaceBoundary | None = None
         self.cancellation_token = cancellation_token or CancellationToken()
         self.changeset_journal = changeset_journal
+        self._active_plan_id: str | None = None
 
     @classmethod
     def for_workspace(
@@ -321,6 +323,7 @@ class AgentRunner:
 
     def _run(self, messages: list[ChatMessage]) -> RunOutcome:
         deadline = time.monotonic() + self.settings.task_timeout_s
+        self._active_plan_id = str(uuid.uuid4()) if self.mode == Mode.PLAN else None
         if self.changeset_journal is not None:
             self.changeset_journal.start()
         self._record("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps,
@@ -603,8 +606,9 @@ class AgentRunner:
             plan_steps.append(PlanStep(tool=call.name, arguments=_safe_arguments(call),
                                        description=_plan_description(call)))
             self._emit("plan_proposal", {"name": call.name,
-                                         "arguments": _safe_arguments(call),
-                                         "description": _plan_description(call)})
+                                      "plan_id": self._active_plan_id,
+                                      "arguments": _safe_arguments(call),
+                                      "description": _plan_description(call)})
             return ToolResult.failure(
                 "PlanMode",
                 "Plan mode: mutations are not executed. Describe your plan in text for review.",
@@ -642,6 +646,7 @@ class AgentRunner:
             steps=steps,
             trace_path=str(self.trace.path) if self.trace.path else None,
             plan=tuple(plan or ()),
+            plan_id=self._active_plan_id,
             usage=usage or Usage(0, 0, 0),
             mode=self.mode,
             pending_calls=pending_calls,

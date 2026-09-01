@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -182,7 +183,8 @@ def _outcome_data(outcome: Any) -> dict[str, Any]:
     return {
         "state": outcome.state, "final_text": outcome.final_text, "steps": outcome.steps,
         "trace_path": outcome.trace_path, "mode": outcome.mode.value,
-        "plan": [step.__dict__ for step in outcome.plan],
+        "plan_id": outcome.plan_id,
+        "plan": [asdict(step) for step in outcome.plan],
         "usage": {"total_tokens": outcome.usage.total_tokens} if outcome.usage else {},
         "pending_calls": [{"id": call.id, "name": call.name, "arguments": call.arguments}
                           for call in outcome.pending_calls],
