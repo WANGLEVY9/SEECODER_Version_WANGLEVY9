@@ -48,6 +48,8 @@ SEECODER 不是某个现成 Agent 产品的界面封装，也不是把代码上�
 
 仓库内的 `site/` 是一张独立的静态工程架构页，用于快速了解运行闭环、模块职责、验证证据、安全边界与路线图。它不读取运行时数据，也不替代源码和测试；页面通过 GitHub Pages 工作流自动发布。
 
+首次发布时，请在仓库 `Settings → Pages → Build and deployment` 将 `Source` 设为 `GitHub Actions` 并保存一次；之后每次推送 `main` 中的 `site/` 变更都会自动发布。默认 `GITHUB_TOKEN` 不具备替仓库首次开启 Pages 的权限，因此工作流不会隐式创建额外访问令牌。
+
 本地预览：
 
 ```bash
