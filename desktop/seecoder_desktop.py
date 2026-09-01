@@ -44,6 +44,14 @@ ACCENT = "#2e83d3"
 SUCCESS = "#3eb779"
 WARNING = "#ffad2e"
 ERROR = "#bf5360"
+TOOL_LABELS = {
+    "read_file": "读取文件", "search_files": "搜索文件", "search_code": "检索代码", "find_files": "查找文件",
+    "project_overview": "分析项目结构", "write_file": "写入文件", "apply_patch": "应用补丁",
+    "delete_file": "删除文件", "create_directory": "创建目录", "copy_file": "复制文件",
+    "move_file": "移动文件", "rename_directory": "重命名目录", "run_command": "运行命令",
+    "git_diff": "检查 Git 差异", "git_status": "检查 Git 状态", "git_log": "读取 Git 历史",
+    "git_show": "读取提交", "web_search": "搜索资料",
+}
 
 
 def utc_now() -> str:
@@ -134,6 +142,26 @@ def parse_event_line(line: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     if not isinstance(event, str) or not isinstance(data, dict):
         return None
     return event, data
+
+
+def tool_label(name: str) -> str:
+    return TOOL_LABELS.get(name, name or "本地工具")
+
+
+def tool_result_detail(data: Dict[str, Any]) -> str:
+    result = data.get("data") if isinstance(data.get("data"), dict) else {}
+    location = next((result.get(key) for key in ("path", "destination", "workspace_path", "new_path", "source") if isinstance(result.get(key), str) and result.get(key)), "")
+    details = [location] if location else []
+    if isinstance(result.get("bytes_written"), int):
+        details.append(f"{result['bytes_written']} bytes")
+    if isinstance(result.get("line_count"), int):
+        details.append(f"{result['line_count']} 行")
+    if "added_lines" in result or "deleted_lines" in result:
+        details.append(f"+{result.get('added_lines', 0)} −{result.get('deleted_lines', 0)} 行")
+    if result.get("created") is True: details.append("已创建")
+    if result.get("deleted") is True: details.append("已删除")
+    if result.get("changed") is True: details.append("已变更")
+    return " · ".join(str(item) for item in details) or str(data.get("error") or "工具已完成")
 
 
 class DesktopApp:
@@ -524,13 +552,33 @@ class DesktopApp:
                 self._append_activity(line.strip()[:240])
             return
         event, data = parsed
-        if event == "model_request":
-            self._append_activity("正在请求模型（第 {} 步）".format(data.get("step", "?")))
+        if event in {"model_request", "reasoning"}:
+            return
         elif event == "tool_dispatch":
-            self._append_activity("模型请求调用 {} 个本地工具".format(data.get("count", "?")))
+            calls = data.get("calls") if isinstance(data.get("calls"), list) else []
+            if not calls:
+                self._append_activity("准备本地动作：{} 个工具调用".format(data.get("count", "?")))
+            for call in calls:
+                if isinstance(call, dict):
+                    name = str(call.get("name", "unknown"))
+                    self._append_activity("准备：{} · {}".format(tool_label(name), call.get("purpose", "执行本地受限操作")))
         elif event == "tool_result":
-            status = "完成" if data.get("ok") else "失败：" + str(data.get("error", "unknown"))
-            self._append_activity("{}：{}".format(data.get("name", "tool"), status))
+            name = str(data.get("name", "unknown"))
+            if data.get("error") == "PlanMode":
+                self._append_activity("计划已记录：{} · {}".format(tool_label(name), data.get("purpose", "等待批准后执行")))
+            else:
+                status = "已完成：{}" if data.get("ok") else "失败：{}"
+                self._append_activity(status.format(tool_label(name)) + " · " + tool_result_detail(data))
+        elif event == "checkpoint_created":
+            self._append_activity("运行检查点已创建：" + str(data.get("changeset_id", "本轮 ChangeSet 已持久化")))
+        elif event == "changeset_updated":
+            files = data.get("files") if isinstance(data.get("files"), list) else []
+            self._append_activity("ChangeSet 已记录：" + (", ".join(str(item) for item in files) or str(data.get("tool", "目录操作"))))
+        elif event == "plan_state":
+            self._append_activity("计划状态：{} · {} 个工作项".format(data.get("status", "unknown"), len(data.get("items", []))))
+        elif event == "plan_proposal":
+            name = str(data.get("name", "本地操作"))
+            self._append_activity("计划动作：{} · {}".format(tool_label(name), data.get("description", name)))
         elif event == "configuration_error":
             self._append_transcript("system", "配置错误：" + str(data.get("message", "未知错误")))
         elif event == "run_outcome":

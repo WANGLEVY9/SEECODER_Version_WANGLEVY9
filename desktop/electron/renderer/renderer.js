@@ -221,6 +221,22 @@ function ensureLiveAgent() {
   return liveAgentEl;
 }
 function addActivity(title, detail = '', kind = '') { const entry = document.createElement('div'); entry.className = 'activity-entry ' + kind; entry.innerHTML = '<strong>' + escapeText(title) + '</strong>' + (detail ? '<small>' + escapeText(detail) + '</small>' : ''); activityList.prepend(entry); }
+const TOOL_LABELS = { read_file: '读取文件', search_files: '搜索文件', search_code: '检索代码', find_files: '查找文件', project_overview: '分析项目结构', write_file: '写入文件', apply_patch: '应用补丁', delete_file: '删除文件', create_directory: '创建目录', copy_file: '复制文件', move_file: '移动文件', rename_directory: '重命名目录', run_command: '运行命令', git_diff: '检查 Git 差异', git_status: '检查 Git 状态', git_log: '读取 Git 历史', git_show: '读取提交', web_search: '搜索资料' };
+function toolLabel(name) { return TOOL_LABELS[name] || name || '本地工具'; }
+function toolActionDetail(name, data = {}) { return data.purpose || ('准备执行 ' + toolLabel(name)); }
+function toolResultDetail(name, data = {}) {
+  const result = data.data && typeof data.data === 'object' ? data.data : {};
+  const location = result.path || result.destination || result.workspace_path || result.new_path || result.source || '';
+  const details = [];
+  if (location) details.push(location);
+  if (Number.isFinite(Number(result.bytes_written))) details.push(Number(result.bytes_written).toLocaleString() + ' bytes');
+  if (Number.isFinite(Number(result.line_count))) details.push(Number(result.line_count).toLocaleString() + ' 行');
+  if (Number.isFinite(Number(result.added_lines)) || Number.isFinite(Number(result.deleted_lines))) details.push('+' + (Number(result.added_lines) || 0) + ' −' + (Number(result.deleted_lines) || 0) + ' 行');
+  if (result.created === true) details.push('已创建');
+  if (result.deleted === true) details.push('已删除');
+  if (result.changed === true) details.push('已变更');
+  return details.join(' · ') || (data.error || '工具已完成');
+}
 function recordLocalChange(name, result) {
   const session = current(); if (!session || !result || !['write_file', 'apply_patch', 'delete_file', 'copy_file', 'move_file'].includes(name)) return;
   const paths = [];
@@ -454,7 +470,7 @@ function handleRunnerEvent(payload) {
   }
   if (event === 'usage') { state.usageTotal = data?.total_tokens || state.usageTotal; setCost(state.usageTotal); return; }
   if (event === 'token') { const el = ensureLiveAgent(); if (el) { liveAgentText += (data?.text || ''); el.classList.add('markdown'); el.innerHTML = markdownToHtml(liveAgentText); conversation.scrollTop = conversation.scrollHeight; } return; }
-  if (event === 'reasoning') { addActivity('模型思考', data?.text || '', ''); return; }
+  if (event === 'reasoning') { return; }
   if (event === 'tool_result' && data?.ok && data?.name === 'rename_directory') {
     const result = data?.data || {};
     recordLocalChange(data.name, result);
@@ -489,10 +505,24 @@ function handleRunnerEvent(payload) {
       : (data?.steps ?? 0) + ' 步';
     addActivity('完成：' + stateName, activityDetail, stateName === 'final' ? 'ok' : 'error'); setRunning(false); liveAgentEl = null; liveAgentText = ''; setBadge(stateName === 'final' ? '已完成' : (recoverable ? '可继续' : '需处理'), stateName === 'final' ? 'ready' : 'error'); render(); refreshEnvironment(); return;
   }
+  if (event === 'model_request') { return; }
+  if (event === 'tool_dispatch') {
+    const calls = Array.isArray(data?.calls) ? data.calls : [];
+    if (!calls.length) addActivity('准备本地动作', (data?.count ?? 0) + ' 个工具调用', 'running');
+    calls.forEach((call) => addActivity('准备：' + toolLabel(call?.name), toolActionDetail(call?.name, call), 'running'));
+    return;
+  }
+  if (event === 'tool_result') {
+    const planned = data?.error === 'PlanMode';
+    const title = planned ? '计划已记录：' + toolLabel(data?.name) : (data?.ok ? '已完成：' + toolLabel(data?.name) : '失败：' + toolLabel(data?.name));
+    const detail = planned ? (data?.purpose || '等待批准后执行') : toolResultDetail(data?.name, data);
+    addActivity(title, detail, planned ? 'running' : (data?.ok ? 'ok' : 'error'));
+    if (data?.ok && ['write_file', 'apply_patch', 'delete_file', 'create_directory', 'copy_file', 'move_file', 'rename_directory'].includes(data?.name)) refreshEnvironment();
+    return;
+  }
   const summaries = {
-    chat_started: ['本地会话已连接', data?.workspace], run_started: ['任务已启动', data?.workspace], model_request: ['请求模型', '第 ' + (data?.step ?? '?') + ' 步'], tool_dispatch: ['准备工具调用', (data?.count ?? 0) + ' 个工具'],
-    tool_result: [data?.ok ? '完成工具：' + (data?.name || 'unknown') : '工具失败：' + (data?.name || 'unknown'), data?.error || '', data?.ok ? 'ok' : 'error'],
-    plan_proposal: ['计划一步', data?.description || data?.name || '', 'ok'],
+    chat_started: ['本地会话已连接', data?.workspace], run_started: ['任务已启动', data?.workspace],
+    plan_proposal: ['计划动作：' + toolLabel(data?.name), data?.description || data?.name || '', 'ok'],
     configuration_error: ['配置错误', data?.message || '', 'error'], runner_error: ['本地进程错误', data?.message || '', 'error'], chat_exit: ['本地会话已退出', 'code=' + (data?.code ?? 'null')],
   };
   const summary = summaries[event]; if (summary) addActivity(summary[0], summary[1], summary[2]); else if (event === 'unstructured_output') addActivity('本地输出', data?.text || '');

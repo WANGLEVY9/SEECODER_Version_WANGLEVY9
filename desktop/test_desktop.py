@@ -38,3 +38,17 @@ class DesktopBoundaryTests(unittest.TestCase):
         self.assertEqual(desktop.parse_event_line(valid), ("tool_result", {"name": "read_file", "ok": True}))
         self.assertIsNone(desktop.parse_event_line("not json"))
         self.assertIsNone(desktop.parse_event_line(json.dumps({"event": "tool_result", "data": []})))
+
+    def test_tool_result_detail_exposes_actionable_location_and_change_summary(self) -> None:
+        detail = desktop.tool_result_detail({
+            "name": "write_file",
+            "ok": True,
+            "data": {"path": "src/example.py", "bytes_written": 1280, "added_lines": 4, "deleted_lines": 1},
+        })
+        self.assertEqual(detail, "src/example.py · 1280 bytes · +4 −1 行")
+
+        read_detail = desktop.tool_result_detail({
+            "name": "read_file", "ok": True,
+            "data": {"path": "src/example.py", "line_count": 42},
+        })
+        self.assertEqual(read_detail, "src/example.py · 42 行")

@@ -398,25 +398,26 @@ final class DesktopStore: ObservableObject {
       addTimeline("计划状态：\(status)", detail: "\(completed)/\(items.count) 步已完成", tone: ["failed", "cancelled"].contains(status) ? .failure : status == "completed" ? .success : .running)
       if status == "cancelled" { pendingApproval = nil; isRunning = false }
     case "token": if let text = data["text"] as? String { appendStreaming(text) }
-    case "reasoning": if let text = data["text"] as? String, !text.isEmpty { addTimeline("模型思考", detail: text, tone: .info) }
+    case "reasoning": break
     case "run_started":
       if let startedMode = data["mode"] as? String, ["ask", "plan", "auto"].contains(startedMode) { mode = startedMode }
       addTimeline("本地 AgentRunner 已启动", detail: "模式：\(data["mode"] as? String ?? mode)，最大步数：\(data["max_steps"] ?? "-")", tone: .running)
-    case "model_request": addTimeline("正在请求模型", detail: "第 \(data["step"] ?? "-") 步：根据当前上下文规划下一步", tone: .running)
+    case "model_request": break
     case "tool_dispatch":
       let calls = data["calls"] as? [[String: Any]] ?? []
-      if calls.isEmpty { addTimeline("准备调用本地工具", detail: "共 \(data["count"] ?? "-") 个工具调用", tone: .running) }
-      for call in calls { addTimeline("调用工具：\(call["name"] as? String ?? "unknown")", detail: call["purpose"] as? String ?? "执行本地受限操作", tone: .running) }
+      if calls.isEmpty { addTimeline("准备本地动作", detail: "共 \(data["count"] ?? "-") 个工具调用", tone: .running) }
+      for call in calls { let name = call["name"] as? String ?? "unknown"; addTimeline("准备：\(toolLabel(name))", detail: call["purpose"] as? String ?? "执行本地受限操作", tone: .running) }
     case "tool_result":
       let name = data["name"] as? String ?? "unknown"; let ok = data["ok"] as? Bool ?? false
       let purpose = data["purpose"] as? String ?? "本地工具执行完成"
-      addTimeline(ok ? "工具成功：\(name)" : "工具失败：\(name)", detail: ok ? purpose : "\(purpose) · \(data["error"] as? String ?? "未知错误")", tone: ok ? .success : .failure)
+      let planned = (data["error"] as? String) == "PlanMode"
+      addTimeline(planned ? "计划已记录：\(toolLabel(name))" : (ok ? "已完成：\(toolLabel(name))" : "失败：\(toolLabel(name))"), detail: planned ? purpose : (ok ? toolResultDetail(data) : "\(purpose) · \(data["error"] as? String ?? "未知错误")"), tone: planned ? .running : (ok ? .success : .failure))
       if ok, ["write_file", "apply_patch", "delete_file", "copy_file", "move_file"].contains(name), let result = data["data"] as? [String: Any] { recordLocalChange(name: name, result: result) }
       if ok, name == "rename_directory", let result = data["data"] as? [String: Any], result["workspace_renamed"] as? Bool == true,
          let oldPath = result["old_path"] as? String, let newPath = result["workspace_path"] as? String {
         applyAgentWorkspaceRename(oldPath: oldPath, newPath: newPath)
       }
-    case "plan_proposal": addTimeline("已提出计划步骤", detail: data["description"] as? String ?? (data["name"] as? String ?? "本地操作"), tone: .warning)
+    case "plan_proposal": let name = data["name"] as? String ?? "本地操作"; addTimeline("计划动作：\(toolLabel(name))", detail: data["description"] as? String ?? name, tone: .warning)
     case "approval_request":
       let name = data["name"] as? String ?? "本地操作"; let detail = "\(name) 需要用户确认后才会在本地执行"
       pendingApproval = PendingApproval(kind: .tool, title: name, detail: detail); addTimeline("等待批准", detail: detail, tone: .warning)
@@ -452,6 +453,19 @@ final class DesktopStore: ObservableObject {
       }
     default: break
     }
+  }
+  private func toolLabel(_ name: String) -> String { ["read_file": "读取文件", "search_files": "搜索文件", "search_code": "检索代码", "find_files": "查找文件", "project_overview": "分析项目结构", "write_file": "写入文件", "apply_patch": "应用补丁", "delete_file": "删除文件", "create_directory": "创建目录", "copy_file": "复制文件", "move_file": "移动文件", "rename_directory": "重命名目录", "run_command": "运行命令", "git_diff": "检查 Git 差异", "git_status": "检查 Git 状态", "git_log": "读取 Git 历史", "git_show": "读取提交", "web_search": "搜索资料"][name] ?? name }
+  private func toolResultDetail(_ data: [String: Any]) -> String {
+    let result = data["data"] as? [String: Any] ?? [:]
+    var details: [String] = []
+    if let path = (result["path"] ?? result["destination"] ?? result["workspace_path"] ?? result["new_path"] ?? result["source"]) as? String { details.append(path) }
+    if let bytes = (result["bytes_written"] as? NSNumber)?.intValue { details.append("\(bytes) bytes") }
+    if let lines = (result["line_count"] as? NSNumber)?.intValue { details.append("\(lines) 行") }
+    if result["added_lines"] != nil || result["deleted_lines"] != nil { details.append("+\((result["added_lines"] as? NSNumber)?.intValue ?? 0) −\((result["deleted_lines"] as? NSNumber)?.intValue ?? 0) 行") }
+    if result["created"] as? Bool == true { details.append("已创建") }
+    if result["deleted"] as? Bool == true { details.append("已删除") }
+    if result["changed"] as? Bool == true { details.append("已变更") }
+    return details.isEmpty ? "工具已完成" : details.joined(separator: " · ")
   }
   private func addTimeline(_ title: String, detail: String, tone: TimelineEvent.Tone) { timeline.append(TimelineEvent(title: title, detail: detail, tone: tone)); if timeline.count > 60 { timeline.removeFirst(timeline.count - 60) } }
   private func recordCLIError(_ text: String) { let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines); guard !cleaned.isEmpty else { return }; activity.insert("CLI: " + cleaned, at: 0); addTimeline("本地进程提示", detail: cleaned, tone: .info) }
