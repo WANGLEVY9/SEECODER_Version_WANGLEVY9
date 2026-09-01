@@ -162,8 +162,8 @@ SEECODER_API_KEY=replace-with-your-key
 # 单次模型请求最长等待时间（秒），默认 120，可按服务商延迟调整
 SEECODER_MODEL_TIMEOUT_S=120
 SEECODER_TASK_TIMEOUT_S=600
-# 单轮最多 32 次模型决策；复杂项目可显式调高，取值范围为 1-100
-SEECODER_MAX_STEPS=32
+# 单轮最多 128 次模型决策；复杂项目可显式调低，取值范围为 1-128
+SEECODER_MAX_STEPS=128
 ```
 
 程序只从进程环境或未入库的 dotenv 文件读取密钥。不会打印 API key 或请求头，`.env`、trace、录屏和虚拟环境已被 `.gitignore` 排除。
@@ -185,7 +185,7 @@ uv run seecoder chat \
   --save /private/tmp/seecoder-session.json
 ```
 
-可用 `uv run seecoder --help`、`uv run seecoder run --help` 和 `uv run seecoder chat --help` 查看参数。`--resume` 恢复已有快照，`--event-json` 输出桌面端使用的本地 JSONL 事件，`--trace-dir` 指定工作区外的审计目录，`--max-steps` 限制单次循环步数。默认 32 步会为“检查 → 编辑 → 验证 → 总结”预留空间；若仍达到上限，已完成变更和会话会保留为可继续状态，而不会被呈现为工具失败。
+可用 `uv run seecoder --help`、`uv run seecoder run --help` 和 `uv run seecoder chat --help` 查看参数。`--resume` 恢复已有快照，`--event-json` 输出桌面端使用的本地 JSONL 事件，`--trace-dir` 指定工作区外的审计目录，`--max-steps` 限制单次循环步数。默认 128 步会为“检查 → 编辑 → 验证 → 总结”预留充足空间；若仍达到上限，已完成变更和会话会保留为可继续状态，而不会被呈现为工具失败。
 
 桌面端和 CLI 的 `chat` 是长生命周期多轮会话。快照当前为 v3：加载时会校验版本、消息角色、工具调用顺序、字段类型、未完成审批和 TaskPlan 状态；旧 v1/v2 快照会迁移为 v3。Plan 模式会为每次提案建立稳定计划 ID，记录每个变更工具的工作项、执行状态和结果证据；批准后状态依次进入 executing、verifying、completed（失败保留失败证据，拒绝或停止进入 cancelled）。模型超时或协议错误只结束当前回合，不会销毁会话进程；流式断线会保留已渲染的文本并仅在尚未输出任何增量时重试。`SEECODER_TASK_TIMEOUT_S` 为整个 Agent 回合设置上限，命令和模型请求仍保留各自的更小超时。桌面端还会对同一会话的重复点击做短时幂等去重，避免一条输入被写入两次。
 

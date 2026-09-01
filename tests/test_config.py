@@ -10,7 +10,23 @@ from seecoder.config import ConfigError, Settings, load_env_file
 
 class ConfigTests(unittest.TestCase):
     def test_default_step_budget_leaves_room_for_validation_and_summary(self) -> None:
-        self.assertEqual(Settings(api_key="test-key", model="test-model").max_steps, 32)
+        self.assertEqual(Settings(api_key="test-key", model="test-model").max_steps, 128)
+
+    def test_step_budget_accepts_128_and_rejects_larger_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / ".env"
+            path.write_text(
+                "SEECODER_API_KEY=file-key\nSEECODER_MODEL=file-model\nSEECODER_MAX_STEPS=128\n",
+                encoding="utf-8",
+            )
+            settings = Settings.from_environment(env_file=path)
+            self.assertEqual(settings.max_steps, 128)
+            path.write_text(
+                "SEECODER_API_KEY=file-key\nSEECODER_MODEL=file-model\nSEECODER_MAX_STEPS=129\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "between 1 and 128"):
+                Settings.from_environment(env_file=path)
 
     def test_env_file_and_process_environment_precedence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
