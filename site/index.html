@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#11100f" />
+    <meta
+      name="description"
+      content="SEECODER 的工程架构、运行闭环、验证证据与开发路线图。"
+    />
+    <title>SEECODER / Engineering Map</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a" aria-hidden="true"></div>
+    <div class="ambient ambient-b" aria-hidden="true"></div>
+
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand-lockup">
+          <img class="brand-image" src="./assets/seecoder-logo.png" alt="SEECODER" />
+          <div>
+            <div class="brand-name">SEECODER</div>
+            <div class="brand-sub">engineering map</div>
+          </div>
+        </div>
+
+        <div class="sidebar-rule"></div>
+
+        <button class="search-trigger" id="searchTrigger" type="button">
+          <span class="search-icon">⌕</span>
+          <span>搜索模块或能力</span>
+          <kbd>⌘ K</kbd>
+        </button>
+
+        <nav class="chapter-nav" aria-label="页面章节">
+          <div class="nav-label">READ THE SYSTEM</div>
+          <a class="nav-item active" href="#overview" data-section="overview">
+            <span class="nav-no">01</span><span>系统总览</span><span class="nav-state">●</span>
+          </a>
+          <a class="nav-item" href="#loop" data-section="loop">
+            <span class="nav-no">02</span><span>一次任务怎样流动</span><span class="nav-state">●</span>
+          </a>
+          <a class="nav-item" href="#modules" data-section="modules">
+            <span class="nav-no">03</span><span>核心模块与职责</span><span class="nav-state">●</span>
+          </a>
+
+          <div class="nav-label nav-label-spaced">TRUST &amp; EVIDENCE</div>
+          <a class="nav-item" href="#evidence" data-section="evidence">
+            <span class="nav-no">04</span><span>验证证据</span><span class="nav-state">●</span>
+          </a>
+          <a class="nav-item" href="#guardrails" data-section="guardrails">
+            <span class="nav-no">05</span><span>安全边界</span><span class="nav-state">●</span>
+          </a>
+          <a class="nav-item" href="#roadmap" data-section="roadmap">
+            <span class="nav-no">06</span><span>开发路线</span><span class="nav-state">→</span>
+          </a>
+
+          <div class="nav-label nav-label-spaced">SOURCE MAP</div>
+          <a class="nav-item" href="#source-map" data-section="source-map">
+            <span class="nav-no">07</span><span>源码入口</span><span class="nav-state">↗</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="progress-meta"><span>PROJECT READINESS</span><strong>06 / 07</strong></div>
+          <div class="progress-track"><span></span></div>
+          <p>一张跟着代码更新的工程地图。事实、边界和计划分开呈现。</p>
+          <button class="theme-toggle" id="themeToggle" type="button">切换浅色阅读</button>
+        </div>
+      </aside>
+
+      <main class="main-content" id="mainContent">
+        <header class="topbar">
+          <div class="breadcrumb"><span>SEECODER</span><b>/</b><strong>ENGINEERING MAP</strong></div>
+          <div class="topbar-actions">
+            <span class="live-dot"><i></i> SOURCE-ALIGNED</span>
+            <a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9" target="_blank" rel="noreferrer">OPEN REPOSITORY ↗</a>
+          </div>
+        </header>
+
+        <div class="mobile-toolbar">
+          <button id="mobileMenu" type="button" aria-label="打开章节导航">☰ <span>章节</span></button>
+          <span>SEECODER / MAP</span>
+          <button id="mobileSearch" type="button" aria-label="搜索页面">⌕</button>
+        </div>
+
+        <section class="section hero-section" id="overview" data-observe="overview">
+          <div class="hero-kicker"><span>LOCAL-FIRST CODING AGENT</span><span>BUILD 0.1 / 2026.09.01</span></div>
+          <h1>看见每一轮<br /><em>真实发生了什么</em></h1>
+          <p class="hero-lede">
+            SEECODER 把模型的下一步建议，变成一条可检查的本地执行链：<strong>理解 → 校验 → 执行 → 回填 → 继续或停止</strong>。
+            这张地图用于快速理解当前项目已经做到哪里，以及哪些能力仍然只是下一站。
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#loop">追踪一次任务 <span>↓</span></a>
+            <a class="button button-quiet" href="#evidence">查看验证证据 <span>↗</span></a>
+          </div>
+
+          <div class="stat-strip" aria-label="项目统计">
+            <div class="stat-cell"><span class="stat-value">25</span><span class="stat-label">Python modules</span></div>
+            <div class="stat-cell"><span class="stat-value">21</span><span class="stat-label">local tools</span></div>
+            <div class="stat-cell"><span class="stat-value">101/101</span><span class="stat-label">backend tests</span></div>
+            <div class="stat-cell"><span class="stat-value">v3</span><span class="stat-label">JSONL protocol</span></div>
+          </div>
+        </section>
+
+        <section class="section contract-section" id="loop" data-observe="loop">
+          <div class="section-heading">
+            <div><span class="section-index">02 / RUNTIME LOOP</span><h2>模型不执行动作。<br /><em>本地内核执行动作。</em></h2></div>
+            <p>程序拥有事实、权限和终止权；模型只负责根据现有证据提出下一步。用户可以在关键变更前介入。</p>
+          </div>
+
+          <div class="loop-rail" aria-label="Agent 运行闭环">
+            <article class="loop-node node-user"><span class="node-number">01</span><span class="node-icon">◎</span><h3>USER TASK</h3><p>目标、工作区、模式</p></article>
+            <div class="rail-arrow">→</div>
+            <article class="loop-node node-context"><span class="node-number">02</span><span class="node-icon">◌</span><h3>CONTEXT</h3><p>历史、记忆、预算</p></article>
+            <div class="rail-arrow">→</div>
+            <article class="loop-node node-model"><span class="node-number">03</span><span class="node-icon">✦</span><h3>MODEL</h3><p>文本 / tool_call</p></article>
+            <div class="rail-arrow">→</div>
+            <article class="loop-node node-policy"><span class="node-number">04</span><span class="node-icon">⊙</span><h3>POLICY</h3><p>参数、权限、并发</p></article>
+            <div class="rail-arrow">→</div>
+            <article class="loop-node node-local"><span class="node-number">05</span><span class="node-icon">▣</span><h3>LOCAL TOOLS</h3><p>文件、命令、Git</p></article>
+          </div>
+
+          <div class="loop-return"><span>真实结果回到上下文</span><b>↺</b><span>继续下一轮，或写入唯一终态</span></div>
+
+          <div class="explain-grid">
+            <div class="explain-card"><span class="card-tag cyan">MODEL</span><h3>建议下一步</h3><p>普通 OpenAI-compatible 客户端只负责传递消息、原生 tool calling、reasoning 和 usage。</p></div>
+            <div class="explain-card"><span class="card-tag amber">PROGRAM</span><h3>保留控制权</h3><p>AgentRunner 维护历史、步数、审批、取消、超时、错误上限和可解释终止状态。</p></div>
+            <div class="explain-card"><span class="card-tag green">USER</span><h3>决定边界</h3><p>Ask / Plan / Auto 把监督和效率的取舍显式放到本地策略里，而不是藏在提示词中。</p></div>
+          </div>
+        </section>
+
+        <section class="section modules-section" id="modules" data-observe="modules">
+          <div class="section-heading compact-heading">
+            <div><span class="section-index">03 / ARCHITECTURE</span><h2>一条链，六个责任面。</h2></div>
+            <p>每个模块都对应一个可阅读、可测试、可追踪的边界。UI 只消费事件，不拥有执行内核。</p>
+          </div>
+          <div class="module-grid">
+            <article class="module-card module-wide"><div class="module-top"><span class="module-id">CORE / 01</span><span class="module-status done">IMPLEMENTED</span></div><code>runner.py</code><h3>AgentRunner · 状态机主循环</h3><p>串起模型请求、工具分发、只读并行、变更串行、审批、流式事件和停止条件。</p><div class="module-foot"><span>FINAL</span><span>STOP_MAX_STEPS</span><span>CANCELLED</span></div></article>
+            <article class="module-card"><div class="module-top"><span class="module-id">ADAPTER / 02</span><span class="module-status done">IMPLEMENTED</span></div><code>model_client.py</code><h3>协议适配</h3><p>解析 tool_calls、reasoning_content、stream delta 与 usage；保留 provider 解耦。</p><div class="file-link">OpenAI-compatible ↗</div></article>
+            <article class="module-card"><div class="module-top"><span class="module-id">STATE / 03</span><span class="module-status done">IMPLEMENTED</span></div><code>session.py</code><h3>会话与快照</h3><p>Conversation 持久化消息、模式、usage、步数和未完成审批，快照 v2 可恢复。</p><div class="file-link">SNAPSHOT_VERSION = 2</div></article>
+            <article class="module-card module-accent"><div class="module-top"><span class="module-id">BOUNDARY / 04</span><span class="module-status done">IMPLEMENTED</span></div><code>tools/</code><h3>本地能力层</h3><p>工具 schema、JSON 校验、工作区边界和结构化错误都在项目内实现。</p><div class="tool-pills"><span>files</span><span>git</span><span>shell</span><span>search</span><span>subagent</span></div></article>
+            <article class="module-card"><div class="module-top"><span class="module-id">OBSERVE / 05</span><span class="module-status done">IMPLEMENTED</span></div><code>trace.py</code><h3>可观测性</h3><p>append-only JSONL trace，敏感 key 和已知 secret 值双重脱敏。</p><div class="file-link">AUDITABLE BY DEFAULT</div></article>
+            <article class="module-card module-wide"><div class="module-top"><span class="module-id">SURFACE / 06</span><span class="module-status done">IMPLEMENTED</span></div><code>desktop/swiftui/</code><h3>原生展示层</h3><p>SwiftUI 连接持续运行的本地 chat 进程，展示会话、流式消息、工具轨迹、审批、环境和 diff 审阅。Electron 是兼容展示层。</p><div class="surface-line"><span>Renderer</span><b>→</b><span>JSONL v3</span><b>→</b><span>AgentRunner</span></div></article>
+          </div>
+        </section>
+
+        <section class="section evidence-section" id="evidence" data-observe="evidence">
+          <div class="section-heading">
+            <div><span class="section-index">04 / EVIDENCE</span><h2>能运行，不等于已证明。<br /><em>这里放证据。</em></h2></div>
+            <p>页面只把仓库和验证记录里能复核的内容标成已完成；真实模型、网络搜索和宿主命令仍受本机配置影响。</p>
+          </div>
+          <div class="evidence-board">
+            <div class="evidence-main">
+              <div class="evidence-head"><span>OFFLINE REGRESSION</span><strong>GREEN</strong></div>
+              <div class="big-number">101<span>/101</span></div>
+              <p>Python backend tests passed</p>
+              <div class="test-bars"><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i></div>
+              <code>uv run python -m unittest discover -s tests -v</code>
+            </div>
+            <div class="evidence-list">
+              <div class="evidence-row"><span class="evidence-icon green">✓</span><div><strong>Electron boundary</strong><p>11 tests · event parser / argv boundary / duplicate safety</p></div><span class="evidence-pill">PASS</span></div>
+              <div class="evidence-row"><span class="evidence-icon green">✓</span><div><strong>Tk compatibility</strong><p>3 tests · local state / backend command / event contract</p></div><span class="evidence-pill">PASS</span></div>
+              <div class="evidence-row"><span class="evidence-icon cyan">⌘</span><div><strong>SwiftUI native surface</strong><p>macOS source parser check passed; full build requires matching Xcode SDK</p></div><span class="evidence-pill info">CHECK</span></div>
+              <div class="evidence-row"><span class="evidence-icon amber">!</span><div><strong>Live provider runs</strong><p>Not equivalent to offline evidence; API, network and host state are external</p></div><span class="evidence-pill warn">BOUNDARY</span></div>
+            </div>
+          </div>
+          <div class="evidence-note"><span>READ THE LOGIC</span><p>测试覆盖的是协议、边界、状态和错误语义；它不是对任意模型任务成功率的承诺。</p><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/docs/delivery-audit-2026-08-28.md" target="_blank" rel="noreferrer">打开交付审计 ↗</a></div>
+        </section>
+
+        <section class="section guardrails-section" id="guardrails" data-observe="guardrails">
+          <div class="section-heading compact-heading">
+            <div><span class="section-index">05 / BOUNDARIES</span><h2>把风险写进结构，而不是写进愿望。</h2></div>
+            <p>这些限制不是营销词。它们是工具层、策略层和运行时的实际约束。</p>
+          </div>
+          <div class="guardrail-grid">
+            <article><span class="guardrail-no">01</span><code>WorkspaceBoundary</code><h3>路径先过边界</h3><p>规范化绝对路径并解析符号链接，拒绝越出当前 workspace、敏感文件和受保护目标。</p></article>
+            <article><span class="guardrail-no">02</span><code>Policy / Mode</code><h3>变更需要策略</h3><p>Ask 在写入或命令前等待批准；Plan 只读并生成计划；Auto 仍受本地工具策略约束。</p></article>
+            <article><span class="guardrail-no">03</span><code>restricted argv</code><h3>命令不默认拼 shell</h3><p>常见验证命令走字面 argv、超时、进程组终止和敏感环境剥离。</p></article>
+            <article><span class="guardrail-no">04</span><code>TraceWriter</code><h3>事实留下轨迹</h3><p>事件和 trace 分开表达模型建议、本地结果、错误和终态，并对凭据做脱敏。</p></article>
+          </div>
+          <div class="boundary-callout"><span class="callout-mark">!</span><div><strong>明确限制：run_command 不是 OS 级沙箱。</strong><p>工作区边界、黑名单和超时能降低风险，但不能阻止熟悉 shell 的命令访问主机外部资源。演示和真实运行应使用不含凭据的隔离 workspace。</p></div></div>
+        </section>
+
+        <section class="section roadmap-section" id="roadmap" data-observe="roadmap">
+          <div class="section-heading">
+            <div><span class="section-index">06 / ROADMAP</span><h2>已完成的能力，<br /><em>与下一轮问题。</em></h2></div>
+            <p>路线图只承认当前代码已经实现和文档已经记录的状态，不把愿望写成结果。</p>
+          </div>
+          <div class="roadmap-list">
+            <div class="roadmap-row"><span class="roadmap-marker complete">✓</span><div class="roadmap-label"><strong>本地 Agent 闭环</strong><p>自研 runner、工具注册、参数校验、错误处理与终止语义</p></div><span class="roadmap-state">SHIPPED</span></div>
+            <div class="roadmap-row"><span class="roadmap-marker complete">✓</span><div class="roadmap-label"><strong>人机协同与可恢复状态</strong><p>Ask / Plan / Auto、流式输出、记忆、压缩、session save/load、ASK 恢复</p></div><span class="roadmap-state">SHIPPED</span></div>
+            <div class="roadmap-row"><span class="roadmap-marker complete">✓</span><div class="roadmap-label"><strong>更聪明的局部协作</strong><p>只读并行、确定性 search_code、有界 spawn_agent、可失败 web_search</p></div><span class="roadmap-state">SHIPPED</span></div>
+            <div class="roadmap-row"><span class="roadmap-marker next">→</span><div class="roadmap-label"><strong>更强执行隔离与自动检查点</strong><p>降低 host shell 风险，完善长任务恢复与更细粒度的变更回滚</p></div><span class="roadmap-state next-state">NEXT</span></div>
+            <div class="roadmap-row"><span class="roadmap-marker next">→</span><div class="roadmap-label"><strong>扩展边界的基础设施</strong><p>插件 / MCP 显式注册、多模型路由、跨平台桌面打包与更多语言分析器</p></div><span class="roadmap-state next-state">LATER</span></div>
+          </div>
+        </section>
+
+        <section class="section source-section" id="source-map" data-observe="source-map">
+          <div class="source-panel">
+            <div class="source-copy"><span class="section-index">07 / SOURCE MAP</span><h2>从这里继续读代码。</h2><p>先读主循环，再读工具边界，最后读桌面事件。页面是导航，不替代源码和测试。</p><a class="button button-primary" href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9" target="_blank" rel="noreferrer">打开 GitHub 仓库 ↗</a></div>
+            <div class="source-tree" aria-label="源码目录树"><div><span>SEECODER/</span></div><div class="tree-indent"><span class="tree-folder">src/seecoder/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/runner.py" target="_blank" rel="noreferrer">└─ runner.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/model_client.py" target="_blank" rel="noreferrer">└─ model_client.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/src/seecoder/tools" target="_blank" rel="noreferrer">└─ tools/</a></div><div class="tree-indent"><span class="tree-folder">desktop/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/desktop/swiftui" target="_blank" rel="noreferrer">└─ swiftui/</a></div><div class="tree-indent"><span class="tree-folder">tests/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/docs" target="_blank" rel="noreferrer">└─ docs/</a></div></div>
+          </div>
+          <div class="footer-line"><span>SEECODER / LOCAL-FIRST / AUDITABLE</span><span>LAST MAP PASS · 2026.09.01</span></div>
+        </section>
+      </main>
+
+      <aside class="inspector" aria-label="当前页信息">
+        <div class="inspector-inner">
+          <div class="inspector-title"><span>LIVE INSPECTOR</span><i></i></div>
+          <div class="inspector-card">
+            <span class="tiny-label">CURRENT SCOPE</span>
+            <strong id="currentScope">SYSTEM OVERVIEW</strong>
+            <div class="scope-line"><span>local boundary</span><b>active</b></div>
+            <div class="scope-line"><span>agent frameworks</span><b>none</b></div>
+            <div class="scope-line"><span>remote execution</span><b>none</b></div>
+          </div>
+          <div class="inspector-block"><span class="tiny-label">STATE MODEL</span><div class="state-stack"><span class="state-chip amber">AWAITING_APPROVAL</span><span class="state-chip cyan">MODEL_REQUEST</span><span class="state-chip green">FINAL</span><span class="state-chip ink">CANCELLED</span></div></div>
+          <div class="inspector-block"><span class="tiny-label">CAPABILITY MIX</span><div class="mini-chart"><div><span>Runtime</span><i style="--h:90%"></i><b>90</b></div><div><span>Evidence</span><i style="--h:78%"></i><b>78</b></div><div><span>Surface</span><i style="--h:64%"></i><b>64</b></div><div><span>Isolation</span><i style="--h:38%"></i><b>38</b></div></div></div>
+          <div class="inspector-quote">“不要把代码存在，误写成效果已经证明。”<span>— project rule</span></div>
+          <div class="inspector-toc"><span class="tiny-label">ON THIS PAGE</span><a href="#overview">系统总览</a><a href="#loop">一次任务怎样流动</a><a href="#modules">核心模块与职责</a><a href="#evidence">验证证据</a><a href="#guardrails">安全边界</a><a href="#roadmap">开发路线</a></div>
+        </div>
+      </aside>
+    </div>
+
+    <dialog class="search-dialog" id="searchDialog" aria-label="搜索页面">
+      <form method="dialog"><div class="dialog-head"><span>SEARCH MAP</span><button aria-label="关闭搜索">×</button></div><input id="searchInput" type="search" placeholder="试试 runner、审批、验证…" autocomplete="off" /><div class="search-results" id="searchResults"><p>输入关键词，跳转到对应的工程区域。</p></div></form>
+    </dialog>
+    <script src="./app.js"></script>
+  </body>
+</html>

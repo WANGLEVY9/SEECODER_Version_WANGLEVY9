@@ -94,3 +94,10 @@ jobs:
             echo 'README contains restricted institutional or submission language.' >&2
             exit 1
           fi
+      - name: Validate static engineering map
+        run: |
+          test -s site/index.html
+          test -s site/styles.css
+          test -s site/app.js
+          test -s site/assets/seecoder-logo.png
+          node --check site/app.js

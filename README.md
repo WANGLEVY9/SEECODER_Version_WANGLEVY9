@@ -14,6 +14,7 @@
 SEECODER 面向需要真实修改代码的个人开发者和社区贡献者。它把大语言模型当作“下一步行动的建议者”，把文件读写、命令执行、Git 操作、审批和会话状态保留在本地内核中。模型可以提出工具调用，但每个调用都必须经过本地解析、权限判断和执行，再把结果回传给模型继续决策。
 
 - 项目仓库：[WANGLEVY9/SEECODER_Version_WANGLEVY9](https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9)
+- 工程地图（GitHub Pages）：[在线查看](https://wanglevy9.github.io/SEECODER_Version_WANGLEVY9/)
 - 默认模型配置：DeepSeek V4 Flash（可替换为其他 OpenAI-compatible 服务）
 - 推荐入口：Python CLI + 原生 macOS SwiftUI 桌面端
 - 设计原则：本地执行、最小权限、可恢复会话、可追踪事件、失败可解释
@@ -42,6 +43,16 @@ SEECODER 不是某个现成 Agent 产品的界面封装，也不是把代码上�
 5. 每一步都以 JSONL 事件和脱敏 trace 表达，桌面端只消费本地事件流。
 
 这使得“模型建议了什么”“本地实际执行了什么”“为何继续、拒绝或停止”可以分开检查。
+
+## 工程地图
+
+仓库内的 `site/` 是一张独立的静态工程架构页，用于快速了解运行闭环、模块职责、验证证据、安全边界与路线图。它不读取运行时数据，也不替代源码和测试；页面通过 GitHub Pages 工作流自动发布。
+
+本地预览：
+
+```bash
+python3 -m http.server 4173 --directory site
+```
 
 ## 架构总览
 
