@@ -581,10 +581,14 @@ class DesktopApp:
             self._append_activity("计划动作：{} · {}".format(tool_label(name), data.get("description", name)))
         elif event == "configuration_error":
             self._append_transcript("system", "配置错误：" + str(data.get("message", "未知错误")))
-        elif event == "run_outcome":
+        elif event in {"turn_outcome", "run_outcome"}:
             self.finished_normally = True
             self._append_transcript("assistant", str(data.get("final_text", "模型未提供最终文本。")))
-            self._append_activity("结束状态：{}（{} 步）".format(data.get("state", "unknown"), data.get("steps", "?")))
+            state = str(data.get("state", "unknown"))
+            if state == "stop_max_steps":
+                self._append_activity("本轮达到执行上限（{} 步）；当前变更已保留，可继续".format(data.get("steps", "?")))
+            else:
+                self._append_activity("结束状态：{}（{} 步）".format(state, data.get("steps", "?")))
             trace_path = data.get("trace_path")
             if trace_path:
                 self._append_activity("已写入本地脱敏 trace")

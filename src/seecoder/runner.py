@@ -67,6 +67,10 @@ Work only through the supplied local tools. First inspect relevant files, make f
 and use run_command to validate your work when feasible. Treat non-zero command exit codes as
 evidence to investigate, not as success. Never claim a task is complete unless you have evidence.
 When finished, provide a concise summary of changes, validation, and any remaining uncertainty.
+Treat model turns as a bounded execution budget. Avoid a long running narration in message content:
+the desktop records concrete planned and completed actions from tool events. Prefer focused batches
+of independent tool calls, never repeat a successful edit without evidence of a defect, and reserve
+time to validate the resulting workspace and provide the final user-facing summary.
 Always answer in the same natural language as the latest user request: use Simplified Chinese for
 Chinese requests and English for English requests. For mixed-language requests, use the dominant
 language while preserving code, commands, paths, identifiers, and quoted text verbatim.
@@ -79,6 +83,11 @@ shell command to rename a directory. The tool updates the active workspace bound
 the new absolute path. For a non-root source directory, pass its workspace-relative path to the
 same tool. Refuse to rename protected system folders, symbolic links, or an existing destination.
 You may edit files inside the selected workspace only through the supplied local tools."""
+
+_MUTATION_PROGRESS_TOOLS = frozenset({
+    "write_file", "apply_patch", "delete_file", "create_directory", "copy_file", "move_file",
+    "rename_directory",
+})
 
 Approver = Callable[[ToolCall], bool | None]
 EventSink = Callable[[str, dict[str, Any]], None]
@@ -144,6 +153,60 @@ def _plan_description(call: ToolCall) -> str:
         argv = arguments.get("argv") or arguments.get("command", "?")
         return f"run_command {argv}"
     return f"{call.name} {json.dumps(arguments, ensure_ascii=False)[:200]}"
+
+
+def _completed_mutation_description(call: ToolCall, result: ToolResult) -> str:
+    """Summarize a finished local mutation without feeding file contents back to the model."""
+
+    data = result.data if isinstance(result.data, dict) else {}
+    for key in ("path", "destination", "workspace_path", "new_path", "source"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            return f"{call.name} {value}"
+    return _plan_description(call)
+
+
+def _completed_mutations_from_history(messages: list[ChatMessage]) -> list[str]:
+    """Recover successful mutations from an existing chat before a continuation turn."""
+
+    calls = {
+        call.id: call
+        for message in messages
+        if message.role == "assistant"
+        for call in message.tool_calls
+        if call.name in _MUTATION_PROGRESS_TOOLS
+    }
+    completed: list[str] = []
+    for message in messages:
+        if message.role != "tool" or not message.tool_call_id or message.tool_call_id not in calls:
+            continue
+        try:
+            payload = json.loads(message.content or "")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or payload.get("ok") is not True or not isinstance(payload.get("data"), dict):
+            continue
+        entry = _completed_mutation_description(calls[message.tool_call_id], ToolResult.success(payload["data"]))
+        if entry not in completed:
+            completed.append(entry)
+    return completed
+
+
+def _contains_chinese(text: str) -> bool:
+    return any("\u4e00" <= character <= "\u9fff" for character in text)
+
+
+def _max_steps_message(task: str, max_steps: int) -> str:
+    if _contains_chinese(task):
+        return (
+            f"本轮已达到配置的 {max_steps} 次模型决策上限。已完成的本地变更和会话状态均已保留；"
+            "请继续当前任务，Agent 会基于现有工作区从未完成部分继续，并优先验证与总结。"
+        )
+    return (
+        f"This turn reached the configured limit of {max_steps} model decisions. Completed local changes "
+        "and conversation state were preserved; continue the current task to resume from the unfinished work, "
+        "then validate and summarize it."
+    )
 
 
 class AgentRunner:
@@ -279,6 +342,53 @@ class AgentRunner:
             return content + "\n\n" + self.memory_block
         return content
 
+    def _prepare_step_messages(
+        self,
+        messages: list[ChatMessage],
+        *,
+        step: int,
+        completed_mutations: list[str],
+    ) -> list[ChatMessage]:
+        """Add an ephemeral, bounded progress ledger to the next provider request.
+
+        The ledger is not appended to the persisted conversation: it is execution
+        control data, not a user-visible message. It makes successful mutations
+        explicit so the model does not recreate completed files on a long task.
+        """
+
+        remaining = self.settings.max_steps - step + 1
+        recent = completed_mutations[-8:]
+        completed = "\n".join(f"- {item[:120]}" for item in recent) or "- none yet"
+        state_message = ChatMessage(
+            role="system",
+            content=(
+                "<execution_budget>\n"
+                f"Current model turn: {step}/{self.settings.max_steps}; remaining including this turn: {remaining}.\n"
+                "Completed local mutations in this conversation:\n"
+                f"{completed}\n"
+                "Do not recreate or overwrite a listed target unless a later inspection found a specific defect. "
+                "Use the remaining budget for only the unfinished work. "
+                + (
+                    "This is the final decision turn: do not begin broad new work; validate what exists and return the final summary."
+                    if remaining == 1
+                    else "When two or fewer decision turns remain, finish only essential work, validate it, and return the final summary."
+                )
+                + "\n</execution_budget>"
+            ),
+        )
+        # Preserve the configured hard context ceiling, including this ledger.
+        available_budget = self.settings.context_char_budget - estimate_message_chars(state_message)
+        if available_budget < 2_000:
+            return self.context.prepare(
+                messages, preserve_complete_history=self.settings.thinking_mode == "enabled"
+            )
+        prepared = ContextManager(available_budget).prepare(
+            messages, preserve_complete_history=self.settings.thinking_mode == "enabled"
+        )
+        if prepared and prepared[0].role == "system":
+            return [prepared[0], state_message, *prepared[1:]]
+        return [state_message, *prepared]
+
     def _complete_streaming(self, messages: list[ChatMessage]) -> ModelResponse:
         """Consume a streaming response, forward deltas, and return the assembled response."""
 
@@ -343,6 +453,7 @@ class AgentRunner:
         last_tool_error = ""
         repeated_failures: dict[str, int] = {}
         plan_steps: list[PlanStep] = []
+        completed_mutations = _completed_mutations_from_history(messages)
         total_usage = Usage(0, 0, 0)
         try:
             for step in range(1, self.settings.max_steps + 1):
@@ -354,8 +465,8 @@ class AgentRunner:
                 self._record("model_request", {"step": step, "message_count": len(messages)})
                 self._emit("model_request", {"step": step})
                 try:
-                    prepared_messages = self.context.prepare(
-                        messages, preserve_complete_history=self.settings.thinking_mode == "enabled"
+                    prepared_messages = self._prepare_step_messages(
+                        messages, step=step, completed_mutations=completed_mutations
                     )
                 except ContextBudgetExceeded as error:
                     return self._finish(RunState.STOP_CONTEXT_BUDGET, str(error), steps - 1)
@@ -481,14 +592,25 @@ class AgentRunner:
                         consecutive_tool_errors = 0
                         last_tool_error = ""
                         repeated_failures.clear()
+                        if call.name in _MUTATION_PROGRESS_TOOLS:
+                            completed = _completed_mutation_description(call, result)
+                            if completed not in completed_mutations:
+                                completed_mutations.append(completed)
                     stopped = self._interrupt_outcome(deadline, steps, total_usage)
                     if stopped is not None:
                         return stopped
             return self._finish(
                 RunState.STOP_MAX_STEPS,
-                f"Stopped after reaching the configured maximum of {self.settings.max_steps} model steps.",
+                _max_steps_message(
+                    next(
+                        (message.content or "" for message in reversed(messages) if message.role == "user"),
+                        "",
+                    ),
+                    self.settings.max_steps,
+                ),
                 self.settings.max_steps,
                 usage=total_usage,
+                recoverable=True,
             )
         except KeyboardInterrupt:
             return self._finish(RunState.CANCELLED, "Run cancelled by user (Ctrl+C).", steps, usage=total_usage)

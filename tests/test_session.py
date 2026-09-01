@@ -82,8 +82,36 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(recovered.state, RunState.FINAL)
         self.assertEqual(model.attempts, 2)
         # The second provider request has a valid assistant observation between
-        # the failed user turn and the new follow-up user turn.
-        self.assertEqual([message.role for message in model.requests[-1]], ["system", "user", "assistant", "user"])
+        # the failed user turn and the new follow-up user turn. The runner also
+        # prepends an ephemeral execution-budget system message; it is never
+        # persisted as conversation history.
+        request = model.requests[-1]
+        durable = [message for message in request if "<execution_budget>" not in (message.content or "")]
+        self.assertEqual([message.role for message in durable], ["system", "user", "assistant", "user"])
+        self.assertEqual(sum("<execution_budget>" in (message.content or "") for message in request), 1)
+
+    def test_continuation_keeps_successful_mutations_in_execution_ledger(self) -> None:
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("write", "write_file", {"path": "created.txt", "content": "done\n"}),)),
+                ModelResponse("Verified the existing file and completed the task."),
+            ]
+        )
+        conversation = Conversation(
+            settings=Settings(api_key="test", model="fake", max_steps=1), model_client=model, workspace=self.workspace
+        )
+
+        paused = conversation.start("创建一个文件")
+        resumed = conversation.send("继续完成并验证")
+
+        self.assertEqual(paused.state, RunState.STOP_MAX_STEPS)
+        self.assertTrue(paused.recoverable)
+        self.assertEqual(resumed.state, RunState.FINAL)
+        ledger = next(
+            message.content for message in model.requests[-1]
+            if "<execution_budget>" in (message.content or "")
+        )
+        self.assertIn("write_file created.txt", ledger)
 
     def test_plan_approval_executes_previously_proposed_mutation(self) -> None:
         model = ScriptedModel(

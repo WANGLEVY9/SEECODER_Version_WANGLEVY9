@@ -120,6 +120,28 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertTrue(change["changeset_id"])
         self.assertEqual(change["files"], ["new.txt"])
 
+    def test_next_model_turn_receives_completed_mutation_ledger_and_budget(self) -> None:
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("write", "write_file", {"path": "new.txt", "content": "created\n"}),)),
+                ModelResponse("Created the file and stopped before repeating it."),
+            ]
+        )
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(max_steps=2), model_client=model, workspace=self.workspace
+        )
+
+        outcome = runner.run("Create one file, then summarize it.")
+
+        self.assertEqual(outcome.state, RunState.FINAL)
+        ledger = next(
+            message.content for message in model.requests[1]
+            if message.role == "system" and message.content and "<execution_budget>" in message.content
+        )
+        self.assertIn("Current model turn: 2/2", ledger)
+        self.assertIn("write_file new.txt", ledger)
+        self.assertIn("final decision turn", ledger)
+
     def test_agent_can_rename_workspace_root_and_reports_new_path(self) -> None:
         root = self.workspace / "unnamed"
         root.mkdir()
@@ -214,6 +236,7 @@ class AgentRunnerTests(unittest.TestCase):
         outcome = runner.run("Keep investigating")
         self.assertEqual(outcome.state, RunState.STOP_MAX_STEPS)
         self.assertEqual(outcome.steps, 2)
+        self.assertTrue(outcome.recoverable)
 
     def test_model_failure_is_a_named_stop_condition(self) -> None:
         runner = AgentRunner.for_workspace(settings=self._settings(), model_client=FailingModel(), workspace=self.workspace)

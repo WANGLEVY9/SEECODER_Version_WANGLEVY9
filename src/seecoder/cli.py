@@ -190,7 +190,7 @@ def _outcome_data(outcome: Any) -> dict[str, Any]:
                           for call in outcome.pending_calls],
         "partial_text": outcome.partial_text,
         "recoverable": outcome.recoverable or outcome.state in {
-            RunState.FAILED_MODEL, RunState.FAILED_PROTOCOL, RunState.STOP_CONTEXT_BUDGET,
+            RunState.FAILED_MODEL, RunState.FAILED_PROTOCOL, RunState.STOP_MAX_STEPS, RunState.STOP_CONTEXT_BUDGET,
             RunState.STOP_TASK_TIMEOUT, RunState.CANCELLED, RunState.AWAITING_APPROVAL,
         },
     }

@@ -9,6 +9,9 @@ from seecoder.config import ConfigError, Settings, load_env_file
 
 
 class ConfigTests(unittest.TestCase):
+    def test_default_step_budget_leaves_room_for_validation_and_summary(self) -> None:
+        self.assertEqual(Settings(api_key="test-key", model="test-model").max_steps, 32)
+
     def test_env_file_and_process_environment_precedence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / ".env"

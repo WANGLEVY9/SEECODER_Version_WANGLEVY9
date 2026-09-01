@@ -435,8 +435,9 @@ final class DesktopStore: ObservableObject {
         addTimeline("等待批准", detail: "状态：awaiting_approval · \(name)", tone: .warning)
         return
       }
-      let tone: TimelineEvent.Tone = state == "final" || state == "plan_proposed" ? .success : .failure
-      addTimeline(state == "final" ? "运行结束" : "运行停止", detail: "状态：\(state)，共 \(data["steps"] ?? "-") 步", tone: tone)
+      let limited = state == "stop_max_steps"
+      let tone: TimelineEvent.Tone = state == "final" || state == "plan_proposed" ? .success : (limited ? .warning : .failure)
+      addTimeline(limited ? "本轮达到执行上限" : (state == "final" ? "运行结束" : "运行停止"), detail: limited ? "共 \(data["steps"] ?? "-") 步 · 当前变更已保留，可继续" : "状态：\(state)，共 \(data["steps"] ?? "-") 步", tone: tone)
     case "configuration_error": let message = data["message"] as? String ?? "配置错误"; addTimeline("无法启动任务", detail: message, tone: .failure); append(.system, message); isRunning = false
     case "turn_outcome":
       let state = data["state"] as? String ?? "unknown"
@@ -445,11 +446,12 @@ final class DesktopStore: ObservableObject {
         addTimeline("计划已生成", detail: "等待批准后执行计划", tone: .warning)
       } else {
         isRunning = false; pendingApproval = nil
-        let terminalTone: TimelineEvent.Tone = state == "final" ? .success : .failure
-        let recoverable = data["recoverable"] as? Bool ?? ["failed_model", "failed_protocol", "stop_context_budget", "stop_task_timeout", "cancelled"].contains(state)
-        let detail = recoverable && state != "final" ? "状态：\(state) · 上一轮已保留，可继续发送" : "状态：\(state)"
-        addTimeline(state == "final" ? "任务完成" : "任务结束", detail: detail, tone: terminalTone)
-        activity.insert(state == "final" ? "任务完成" : "任务结束 · \(state)", at: 0)
+        let limited = state == "stop_max_steps"
+        let recoverable = data["recoverable"] as? Bool ?? ["failed_model", "failed_protocol", "stop_max_steps", "stop_context_budget", "stop_task_timeout", "cancelled"].contains(state)
+        let terminalTone: TimelineEvent.Tone = state == "final" ? .success : (limited ? .warning : .failure)
+        let detail = limited ? "共 \(data["steps"] ?? "-") 步 · 当前变更已保留，可继续发送" : (recoverable && state != "final" ? "状态：\(state) · 上一轮已保留，可继续发送" : "状态：\(state)")
+        addTimeline(limited ? "本轮达到执行上限" : (state == "final" ? "任务完成" : "任务结束"), detail: detail, tone: terminalTone)
+        activity.insert(limited ? "本轮达到执行上限 · 可继续" : (state == "final" ? "任务完成" : "任务结束 · \(state)"), at: 0)
       }
     default: break
     }

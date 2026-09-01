@@ -499,11 +499,12 @@ function handleRunnerEvent(payload) {
     }
     hideApproval();
     appendMessage('agent', data?.final_text || '任务结束，但没有收到可显示的总结。');
-    const recoverable = data?.recoverable || ['failed_model', 'failed_protocol', 'stop_context_budget', 'stop_task_timeout', 'cancelled'].includes(stateName);
+    const recoverable = data?.recoverable || ['failed_model', 'failed_protocol', 'stop_max_steps', 'stop_context_budget', 'stop_task_timeout', 'cancelled'].includes(stateName);
+    const reachedStepLimit = stateName === 'stop_max_steps';
     const activityDetail = recoverable && stateName !== 'final'
       ? (data?.steps ?? 0) + ' 步 · 上一轮已保留，可继续发送下一条指令或重试'
       : (data?.steps ?? 0) + ' 步';
-    addActivity('完成：' + stateName, activityDetail, stateName === 'final' ? 'ok' : 'error'); setRunning(false); liveAgentEl = null; liveAgentText = ''; setBadge(stateName === 'final' ? '已完成' : (recoverable ? '可继续' : '需处理'), stateName === 'final' ? 'ready' : 'error'); render(); refreshEnvironment(); return;
+    addActivity(reachedStepLimit ? '本轮达到执行上限' : '完成：' + stateName, activityDetail, stateName === 'final' ? 'ok' : (recoverable ? 'running' : 'error')); setRunning(false); liveAgentEl = null; liveAgentText = ''; setBadge(stateName === 'final' ? '已完成' : (recoverable ? '可继续' : '需处理'), stateName === 'final' ? 'ready' : (recoverable ? 'running' : 'error')); render(); refreshEnvironment(); return;
   }
   if (event === 'model_request') { return; }
   if (event === 'tool_dispatch') {
