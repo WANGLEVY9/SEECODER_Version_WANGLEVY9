@@ -86,7 +86,7 @@ flowchart LR
 | 模型交互 | 原生 tool-calling、reasoning 内容保留、流式增量、usage 统计、有限重试 | 只适配协议，不托管代码执行 |
 | 上下文与记忆 | 历史裁剪、上下文压缩、`SEECODER.md`/`AGENTS.md` 项目指引、Skills 加载 | 指引不能扩大工具权限 |
 | 可观测性 | 本地 JSONL 事件、脱敏 trace、工具成功/失败、审批和终止状态 | trace 默认写到工作区外 |
-| 变更审阅基础 | 写入前基线、前后 SHA-256、工作区外 ChangeSet journal、哈希冲突保护 | SwiftUI/Electron 均提供只读审阅与显式回退 |
+| 变更审阅基础 | 运行前 checkpoint、写入前基线、前后 SHA-256、工作区外 ChangeSet journal、哈希冲突保护 | SwiftUI/Electron 均提供只读审阅与显式回退 |
 | 桌面端 | SwiftUI 三栏会话界面、实时轨迹、审阅 diff、工具/Skills 面板、可调整布局 | Electron 仅保留兼容实现 |
 
 ## 自研实现与关键决策
@@ -268,7 +268,7 @@ UV_CACHE_DIR=/private/tmp/seecoder-uv-cache \
 (cd desktop/electron && npm test)
 ```
 
-最近一次离线回归基线为 Python 后端 **110/110**，Electron 端测试全部通过；SwiftUI 原生端源码可通过 Swift parser 检查，完整构建应在与 macOS SDK 匹配的 Xcode 工具链中执行。会话快照采用原子替换并在原生桌面端自动追加 `--resume`，Git 差异同时覆盖 staged、unstaged 与 untracked 文件，ToolRegistry 在本地统一执行 JSON Schema 子集校验和能力分类。真实模型、网络搜索和宿主命令的结果取决于本机配置，不能用离线 fake model 代替声明为端到端验证。
+最近一次离线回归基线为 Python 后端 **111/111**，Electron 端测试全部通过；SwiftUI 原生端源码可通过 Swift parser 检查，完整构建应在与 macOS SDK 匹配的 Xcode 工具链中执行。每次运行都会先在工作区外持久化 ChangeSet checkpoint，并在结束时写入终态；会话快照采用原子替换并在原生桌面端自动追加 `--resume`，Git 差异同时覆盖 staged、unstaged 与 untracked 文件，ToolRegistry 在本地统一执行 JSON Schema 子集校验和能力分类。真实模型、网络搜索和宿主命令的结果取决于本机配置，不能用离线 fake model 代替声明为端到端验证。
 
 ## CI/CD 流水线
 

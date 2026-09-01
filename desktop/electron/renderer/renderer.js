@@ -437,6 +437,10 @@ function handleRunnerEvent(payload) {
     addActivity('ChangeSet 记录警告', data?.message || '本次变更无法完整记录。', 'error');
     return;
   }
+  if (event === 'checkpoint_created') {
+    addActivity('运行检查点已创建', data?.changeset_id || '本轮 ChangeSet 已持久化', 'ok');
+    return;
+  }
   if (event === 'plan_state') {
     const session = current();
     if (session && data?.plan_id) {

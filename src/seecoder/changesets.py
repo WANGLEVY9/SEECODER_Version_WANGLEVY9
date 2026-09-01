@@ -69,6 +69,7 @@ class ChangeSet:
     run_id: str
     workspace: str
     created_at: str
+    status: str = "active"
     records: list[dict[str, Any]] = field(default_factory=list)
     directory_operations: list[dict[str, Any]] = field(default_factory=list)
 
@@ -94,7 +95,16 @@ class ChangeSetJournal:
             workspace=str(self.workspace),
             created_at=datetime.now(UTC).isoformat(),
         )
+        self._persist()
         return self.active
+
+    def finish(self, status: str) -> None:
+        """Persist the terminal run status while keeping rollback data intact."""
+
+        if self.active is None:
+            return
+        self.active.status = status
+        self._persist()
 
     def update_workspace(self, workspace: Path) -> None:
         """Follow a permitted workspace-root rename for subsequent mutations."""
@@ -289,7 +299,8 @@ class ChangeSetJournal:
             raw = json.loads(path.read_text(encoding="utf-8"))
             return ChangeSet(
                 id=str(raw["id"]), run_id=str(raw["run_id"]), workspace=str(raw["workspace"]),
-                created_at=str(raw["created_at"]), records=list(raw.get("records", [])),
+                created_at=str(raw["created_at"]), status=str(raw.get("status", "active")),
+                records=list(raw.get("records", [])),
                 directory_operations=list(raw.get("directory_operations", [])),
             )
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):

@@ -41,6 +41,15 @@ class ChangeSetJournalTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
 
+    def test_start_persists_a_recoverable_checkpoint_and_finish_status(self) -> None:
+        checkpoint = self.journal.active
+        self.assertIsNotNone(checkpoint)
+        checkpoint_path = self.storage / f"{checkpoint.id}.json"
+        self.assertTrue(checkpoint_path.is_file())
+        self.assertEqual(json.loads(checkpoint_path.read_text(encoding="utf-8"))["status"], "active")
+        self.journal.finish("cancelled")
+        self.assertEqual(json.loads(checkpoint_path.read_text(encoding="utf-8"))["status"], "cancelled")
+
     def test_refuses_rollback_after_a_later_edit(self) -> None:
         target = self.workspace / "example.txt"
         target.write_text("before\n", encoding="utf-8")

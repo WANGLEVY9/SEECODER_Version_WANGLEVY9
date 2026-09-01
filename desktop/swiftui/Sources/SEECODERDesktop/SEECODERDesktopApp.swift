@@ -379,6 +379,8 @@ final class DesktopStore: ObservableObject {
       addTimeline("ChangeSet 已记录", detail: files.isEmpty ? (data["tool"] as? String ?? "目录操作") : files, tone: .success)
     case "changeset_error":
       addTimeline("ChangeSet 记录警告", detail: data["message"] as? String ?? "本次变更无法完整记录", tone: .warning)
+    case "checkpoint_created":
+      addTimeline("运行检查点已创建", detail: data["changeset_id"] as? String ?? "本轮 ChangeSet 已持久化", tone: .success)
     case "plan_state":
       let items = (data["items"] as? [[String: Any]] ?? []).map { item in
         WorkItemModel(id: item["id"] as? String ?? UUID().uuidString,

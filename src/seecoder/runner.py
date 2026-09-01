@@ -325,7 +325,15 @@ class AgentRunner:
         deadline = time.monotonic() + self.settings.task_timeout_s
         self._active_plan_id = str(uuid.uuid4()) if self.mode == Mode.PLAN else None
         if self.changeset_journal is not None:
-            self.changeset_journal.start()
+            try:
+                checkpoint = self.changeset_journal.start()
+                checkpoint_data = {"changeset_id": checkpoint.id, "workspace": checkpoint.workspace}
+                self._record("checkpoint_created", checkpoint_data)
+                self._emit("checkpoint_created", checkpoint_data)
+            except (OSError, ValueError) as error:
+                warning = {"tool": "checkpoint", "message": f"{type(error).__name__}: {error}"}
+                self._record("changeset_error", warning)
+                self._emit("changeset_error", warning)
         self._record("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps,
                                      "task_timeout_s": self.settings.task_timeout_s})
         self._emit("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps,
@@ -640,6 +648,13 @@ class AgentRunner:
         partial_text: str | None = None,
         recoverable: bool = False,
     ) -> RunOutcome:
+        if self.changeset_journal is not None:
+            try:
+                self.changeset_journal.finish(state.value)
+            except (OSError, ValueError) as error:
+                warning = {"tool": "checkpoint", "message": f"{type(error).__name__}: {error}"}
+                self._record("changeset_error", warning)
+                self._emit("changeset_error", warning)
         outcome = RunOutcome(
             state=state,
             final_text=final_text,
