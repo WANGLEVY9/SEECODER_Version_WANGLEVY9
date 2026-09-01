@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from seecoder.approval import Policy
+from seecoder.changesets import ChangeSetJournal
 from seecoder.config import Settings
 from seecoder.compaction import DEFAULT_KEEP_TURNS
 from seecoder.context import ContextBudgetExceeded, ContextManager, _turns, estimate_message_chars
@@ -162,6 +163,7 @@ class AgentRunner:
         stream_sink: Callable[[StreamEvent], None] | None = None,
         compactor: Callable[[list[ChatMessage]], str] | None = None,
         cancellation_token: CancellationToken | None = None,
+        changeset_journal: ChangeSetJournal | None = None,
     ) -> None:
         self.settings = settings
         self.model_client = model_client
@@ -178,6 +180,7 @@ class AgentRunner:
         self.compactor = compactor
         self.workspace_boundary: WorkspaceBoundary | None = None
         self.cancellation_token = cancellation_token or CancellationToken()
+        self.changeset_journal = changeset_journal
 
     @classmethod
     def for_workspace(
@@ -194,6 +197,7 @@ class AgentRunner:
         compactor: Callable[[list[ChatMessage]], str] | None = None,
         enable_subagents: bool = True,
         cancellation_token: CancellationToken | None = None,
+        changeset_storage_dir: Path | None = None,
     ) -> AgentRunner:
         boundary = WorkspaceBoundary(workspace)
         tool_instances: list[Any] = [
@@ -227,6 +231,8 @@ class AgentRunner:
         if enable_subagents:
             tool_instances.append(SpawnAgentTool(_subagent_factory(settings, model_client, workspace)))
         tools = ToolRegistry.create(tool_instances)
+        if changeset_storage_dir is None and getattr(trace, "path", None) is not None:
+            changeset_storage_dir = trace.path.parent / "changesets"
         runner = cls(
             settings=settings,
             model_client=model_client,
@@ -241,6 +247,7 @@ class AgentRunner:
             stream_sink=stream_sink,
             compactor=compactor,
             cancellation_token=cancellation_token,
+            changeset_journal=ChangeSetJournal(boundary.root, changeset_storage_dir),
         )
         runner.workspace_boundary = boundary
         return runner
@@ -314,6 +321,8 @@ class AgentRunner:
 
     def _run(self, messages: list[ChatMessage]) -> RunOutcome:
         deadline = time.monotonic() + self.settings.task_timeout_s
+        if self.changeset_journal is not None:
+            self.changeset_journal.start()
         self._record("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps,
                                      "task_timeout_s": self.settings.task_timeout_s})
         self._emit("run_started", {"mode": self.mode.value, "max_steps": self.settings.max_steps,
@@ -484,6 +493,35 @@ class AgentRunner:
             futures = [executor.submit(self.tools.dispatch, call) for call in calls]
             return [future.result() for future in futures]
 
+    def _dispatch_mutation(self, call: ToolCall) -> ToolResult:
+        before: dict[str, Any] = {}
+        journal_error: str | None = None
+        if self.changeset_journal is not None:
+            try:
+                before = self.changeset_journal.capture_before(call)
+            except (OSError, ValueError) as error:
+                # A journal failure must not turn an otherwise valid local
+                # mutation into an unreported runner crash.  The result below
+                # remains observable and the UI receives an explicit warning.
+                journal_error = f"{type(error).__name__}: {error}"
+        result = self.tools.dispatch(call)
+        if self.changeset_journal is not None:
+            try:
+                change = self.changeset_journal.record(call, result, before)
+                if change is not None:
+                    self._record("changeset_updated", change)
+                    self._emit("changeset_updated", change)
+                workspace_path = result.data.get("workspace_path") if isinstance(result.data, dict) else None
+                if result.ok and isinstance(workspace_path, str) and result.data.get("workspace_renamed"):
+                    self.changeset_journal.update_workspace(Path(workspace_path))
+            except (OSError, ValueError) as error:
+                journal_error = f"{type(error).__name__}: {error}"
+        if journal_error is not None:
+            warning = {"tool": call.name, "message": journal_error}
+            self._record("changeset_error", warning)
+            self._emit("changeset_error", warning)
+        return result
+
     def resume_pending(
         self, messages: list[ChatMessage], pending_calls: tuple[ToolCall, ...], *, approved: bool
     ) -> RunOutcome:
@@ -501,7 +539,7 @@ class AgentRunner:
         for index, call in enumerate(pending_calls):
             if not self.tools.is_read_only(call.name):
                 result = (
-                    self.tools.dispatch(call)
+                    self._dispatch_mutation(call)
                     if approved
                     else ToolResult.failure("DeniedByUser", "User denied this action in ask mode.")
                 )
@@ -576,9 +614,11 @@ class AgentRunner:
             self._emit("approval_request", {"name": call.name, "arguments": _safe_arguments(call)})
             self._record("approval_request", {"call": self._call_data(call)})
             if self.approver is not None and self.approver(call):
-                return self.tools.dispatch(call)
+                return self._dispatch_mutation(call)
             return ToolResult.failure("DeniedByUser", "User denied this action in ask mode.")
-        return self.tools.dispatch(call)
+        if self.tools.is_read_only(call.name):
+            return self.tools.dispatch(call)
+        return self._dispatch_mutation(call)
 
     @staticmethod
     def _is_plan_notice(result: ToolResult) -> bool:

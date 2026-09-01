@@ -89,7 +89,7 @@ function parseUnifiedDiff(diff = "") {
 }
 
 function desktopCapabilities() {
-  return { protocolVersion: 3, features: ["local_git_diff", "ordered_session_events", "persisted_approval"] };
+  return { protocolVersion: 3, features: ["local_git_diff", "ordered_session_events", "persisted_approval", "changeset_journal"] };
 }
 
 function validateWorkspaceFolderName(value) {

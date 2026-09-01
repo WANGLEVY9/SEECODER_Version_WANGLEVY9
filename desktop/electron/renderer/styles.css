@@ -131,6 +131,21 @@ kbd { margin-left: auto; color: #aaa4ae; font-size: 10px; font-family: inherit; 
 .close-review { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 7px; background: transparent; color: #7890a0; font-size: 22px; line-height: 1; }
 .close-review:hover { background: #edf5f8; color: #356783; }
 .review-summary { margin: 13px 0 13px; color: #748a99; font-size: 11px; line-height: 1.55; }
+.changeset-section { margin: 0 -4px 14px; border: 1px solid #e0e9eb; border-radius: 9px; background: rgba(255,255,255,.56); padding: 9px; }
+.changeset-section > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; color: #536e7c; font-size: 11px; }
+.changeset-section > header span { min-width: 18px; border-radius: 99px; background: #e8f4f3; color: #3b9884; padding: 2px 6px; text-align: center; font-size: 10px; }
+.changeset-list { display: flex; max-height: 190px; flex-direction: column; gap: 6px; overflow-y: auto; }
+.changeset-card { border: 1px solid #e3eaeb; border-radius: 7px; background: rgba(255,255,255,.72); padding: 7px 8px; }
+.changeset-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 7px; }
+.changeset-card strong, .changeset-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.changeset-card strong { color: #466579; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 10px; }
+.changeset-card small { margin-top: 3px; color: #8b9ba3; font-size: 9px; }
+.changeset-files { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+.changeset-file { max-width: 100%; overflow: hidden; border: 0; border-radius: 4px; background: #eef6f7; padding: 3px 5px; color: #38758b; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.changeset-file:hover { background: #dceef1; }
+.changeset-rollback { flex: none; border: 1px solid #efd6d3; border-radius: 5px; background: #fff8f7; padding: 3px 5px; color: #ad6264; font-size: 9px; font-weight: 700; }
+.changeset-rollback:hover { background: #fcebea; }
+.changeset-kind { color: #9b8a63; font-size: 9px; }
 .review-files { display: flex; max-height: 166px; flex-direction: column; gap: 3px; overflow-y: auto; margin: 0 -4px 14px; padding: 0 4px; }
 .review-file { display: flex; align-items: center; justify-content: space-between; min-width: 0; border: 1px solid transparent; border-radius: 7px; background: transparent; padding: 7px 8px; color: #5c7383; text-align: left; }
 .review-file:hover { background: #f1f7f8; }

@@ -76,6 +76,10 @@
         <section id="review-pane" class="review-pane" hidden aria-label="本地 Git 变更审阅">
           <header class="review-heading"><div><span class="eyebrow">本地 Git · 只读</span><h2>审阅变更</h2></div><button id="close-review" class="close-review" title="返回运行状态">×</button></header>
           <p id="review-summary" class="review-summary">从“已编辑文件”卡片选择一个文件，查看未提交的本地差异。</p>
+          <section class="changeset-section" aria-label="ChangeSet 历史">
+            <header><strong>ChangeSet</strong><span id="changeset-count">0</span></header>
+            <div id="changeset-list" class="changeset-list"><p class="review-muted">正在读取本轮变更记录…</p></div>
+          </section>
           <nav id="review-files" class="review-files" aria-label="已修改文件"></nav>
           <div class="diff-surface"><div id="diff-title" class="diff-title">尚未选择文件</div><div id="diff-view" class="diff-view" tabindex="0"></div></div>
         </section>

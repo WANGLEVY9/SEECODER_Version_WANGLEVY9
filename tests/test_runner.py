@@ -100,6 +100,26 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertIn("purpose", result)
         self.assertIn("data", result)
 
+    def test_mutation_emits_a_reviewable_changeset_event(self) -> None:
+        events: list[tuple[str, dict[str, Any]]] = []
+        model = ScriptedModel(
+            [
+                ModelResponse(None, (call("write", "write_file", {"path": "new.txt", "content": "created\n"}),)),
+                ModelResponse("Created the file."),
+            ]
+        )
+        runner = AgentRunner.for_workspace(
+            settings=self._settings(), model_client=model, workspace=self.workspace,
+            event_sink=lambda event, data: events.append((event, data)),
+        )
+
+        outcome = runner.run("Create the fixture.")
+
+        self.assertEqual(outcome.state, RunState.FINAL)
+        change = next(data for event, data in events if event == "changeset_updated")
+        self.assertTrue(change["changeset_id"])
+        self.assertEqual(change["files"], ["new.txt"])
+
     def test_agent_can_rename_workspace_root_and_reports_new_path(self) -> None:
         root = self.workspace / "unnamed"
         root.mkdir()

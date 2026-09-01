@@ -29,6 +29,8 @@ const activityContent = $('.activity-content');
 const reviewPane = $('#review-pane');
 const reviewFiles = $('#review-files');
 const reviewSummary = $('#review-summary');
+const changesetCount = $('#changeset-count');
+const changesetList = $('#changeset-list');
 const diffTitle = $('#diff-title');
 const diffView = $('#diff-view');
 const workspaceDialog = $('#workspace-dialog');
@@ -61,7 +63,7 @@ function loadMode() {
   return ["ask", "plan", "auto"].includes(value) ? value : "auto";
 }
 function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.sessions)); }
-function makeSession(workspace = defaultWorkspace) { return { id: crypto.randomUUID(), title: '新对话', workspace, createdAt: Date.now(), updatedAt: Date.now(), messages: [], environment: null, localChanges: [] }; }
+function makeSession(workspace = defaultWorkspace) { return { id: crypto.randomUUID(), title: '新对话', workspace, createdAt: Date.now(), updatedAt: Date.now(), messages: [], environment: null, localChanges: [], changesets: [] }; }
 function current() { return state.sessions.find((session) => session.id === state.currentId); }
 function ensureSession() { if (!state.sessions.length) state.sessions.push(makeSession()); if (!current()) state.currentId = state.sessions[0].id; persist(); }
 function escapeText(value) { const element = document.createElement('span'); element.textContent = value; return element.innerHTML; }
@@ -135,7 +137,9 @@ function changeCard(environment, session) {
   const files = filesForCard.slice(0, 6).map((file) => '<li><button class="change-file" data-diff-path="' + escapeText(file.path) + '"><code>' + escapeText(file.path) + '</code><span><b>+' + (Number(file.added) || 0) + '</b> <i>−' + (Number(file.deleted) || 0) + '</i><small>查看差异 →</small></span></button></li>').join('');
   const remaining = filesForCard.length - 6;
   const sourceHint = environment?.isRepository ? '' : '<small class="change-source">本轮 Agent 编辑记录（工作区未检测到 Git 基线）</small>';
-  return '<section class="change-card"><header><div class="change-icon">▣</div><div><strong>已编辑 ' + filesForCard.length + ' 个文件</strong><small><b>+' + totals.added + '</b> −' + totals.deleted + '</small>' + sourceHint + '</div></header><ul>' + files + (remaining > 0 ? '<li class="more-files">另有 ' + remaining + ' 个文件</li>' : '') + '</ul></section>';
+  const sets = Array.isArray(session?.changesets) ? session.changesets : [];
+  const setHint = sets.length ? '<small class="change-source">本轮已记录 ' + sets.length + ' 个 ChangeSet，可在右侧审阅</small>' : '';
+  return '<section class="change-card"><header><div class="change-icon">▣</div><div><strong>已编辑 ' + filesForCard.length + ' 个文件</strong><small><b>+' + totals.added + '</b> −' + totals.deleted + '</small>' + sourceHint + setHint + '</div></header><ul>' + files + (remaining > 0 ? '<li class="more-files">另有 ' + remaining + ' 个文件</li>' : '') + '</ul></section>';
 }
 function renderWelcome() {
   const session = current();
@@ -260,6 +264,7 @@ function renderReview() {
   const session = current(); const environment = session?.environment;
   const files = changeFiles(environment, session);
   const review = state.review;
+  renderChangeSets(session);
   reviewFiles.innerHTML = files.length ? files.map((file) => '<button class="review-file' + (file.path === review.path ? ' active' : '') + '" data-review-path="' + escapeText(file.path) + '"><code>' + escapeText(file.path) + '</code><span><b>+' + (Number(file.added) || 0) + '</b> −' + (Number(file.deleted) || 0) + '</span></button>').join('') : '<p class="review-muted">当前工作区没有可审阅的 Agent 编辑记录。</p>';
   reviewFiles.querySelectorAll('[data-review-path]').forEach((button) => button.addEventListener('click', () => openReview(button.dataset.reviewPath)));
   if (review.loading) {
@@ -273,6 +278,24 @@ function renderReview() {
   }
   reviewSummary.textContent = environment?.isRepository ? '以下为 ' + review.path + ' 的本地未提交差异。' : '以下为 ' + review.path + ' 的 Agent 编辑记录；工作区未检测到 Git 基线。'; diffTitle.textContent = review.path;
   diffView.innerHTML = review.lines.length ? review.lines.map(diffLineHtml).join('') : '<p class="review-muted">Git 未返回可显示的文本差异。该文件可能只有暂存区变更，或工作区状态已更新。</p>';
+}
+function renderChangeSets(session) {
+  if (!changesetList || !changesetCount) return;
+  const sets = Array.isArray(session?.changesets) ? session.changesets : [];
+  changesetCount.textContent = String(sets.length);
+  if (!sets.length) {
+    changesetList.innerHTML = '<p class="review-muted">当前工作区还没有持久化 ChangeSet。</p>';
+    return;
+  }
+  changesetList.innerHTML = sets.map((set, index) => {
+    const files = Array.isArray(set.files) ? set.files : [];
+    const fileMarkup = files.map((file) => '<button class="changeset-file" data-review-path="' + escapeText(file) + '">' + escapeText(file) + '</button>').join('');
+    const shortId = escapeText(String(set.id || '').slice(0, 8));
+    const action = set.directory ? '<span class="changeset-kind">目录操作</span>' : '<button class="changeset-rollback" data-rollback-id="' + escapeText(set.id) + '">回退</button>';
+    return '<article class="changeset-card"><header><div><strong>#' + (index + 1) + ' · ' + shortId + '</strong><small>' + escapeText(set.tool || '本地变更') + ' · ' + files.length + ' 个文件</small></div>' + action + '</header><div class="changeset-files">' + (fileMarkup || '<span class="changeset-kind">无文件级记录</span>') + '</div></article>';
+  }).join('');
+  changesetList.querySelectorAll('[data-review-path]').forEach((button) => button.addEventListener('click', () => openReview(button.dataset.reviewPath)));
+  changesetList.querySelectorAll('[data-rollback-id]').forEach((button) => button.addEventListener('click', () => rollbackChangeset(button.dataset.rollbackId)));
 }
 function setReviewOpen(open) {
   state.review.open = open; reviewPane.hidden = !open; activityContent.hidden = open; appShell.classList.toggle('review-open', open);
@@ -318,8 +341,37 @@ async function openReview(rawPath) {
 async function refreshEnvironment() {
   const session = current(); if (!session?.workspace) return;
   environmentDetails.innerHTML = '<span class="environment-muted">正在读取本地 Git 状态…</span>';
-  try { session.environment = await window.seecoderDesktop.inspectEnvironment(session.workspace); persist(); renderEnvironment(); renderConversation(); renderReview(); }
+  try { session.environment = await window.seecoderDesktop.inspectEnvironment(session.workspace); await refreshChangesets(session); persist(); renderEnvironment(); renderConversation(); renderReview(); }
   catch { session.environment = { isRepository: false, files: [] }; renderEnvironment(); }
+}
+async function refreshChangesets(session = current()) {
+  if (!session?.workspace || !window.seecoderDesktop.listChangesets) return;
+  try {
+    const result = await window.seecoderDesktop.listChangesets(session.workspace);
+    if (!result?.ok || !Array.isArray(result.changesets) || current()?.id !== session.id) return;
+    session.changesets = result.changesets.map((set) => ({
+      id: set.id, run_id: set.run_id, created_at: set.created_at, tool: set.records?.[0]?.tool || (set.directory_operations?.[0]?.tool || '本地变更'),
+      files: Array.isArray(set.records) ? set.records.map((record) => record.path).filter(Boolean) : [], directory: Array.isArray(set.directory_operations) && set.directory_operations.length > 0,
+    }));
+    persist(); renderChangeSets(session);
+  } catch { /* A missing or incomplete journal is not a reason to hide Git review. */ }
+}
+async function rollbackChangeset(id) {
+  const session = current();
+  if (!session?.workspace || state.running || !window.seecoderDesktop.rollbackChangeset) return;
+  const set = (session.changesets || []).find((item) => item.id === id);
+  if (!set || !window.confirm('确认回退 ChangeSet ' + String(id).slice(0, 8) + '？只有该 ChangeSet 之后未被修改的文件才会被恢复。')) return;
+  const result = await window.seecoderDesktop.rollbackChangeset({ workspace: session.workspace, changesetId: id });
+  if (!result?.ok) {
+    addActivity('ChangeSet 回退被拒绝', result?.conflicts?.join(', ') || result?.error || '未知错误', 'error');
+    return;
+  }
+  const restored = Array.isArray(result.restored) ? result.restored : [];
+  session.localChanges = (session.localChanges || []).filter((item) => !restored.includes(item.path));
+  session.changesets = (session.changesets || []).filter((item) => item.id !== id);
+  persist(); addActivity('ChangeSet 已回退', restored.join(', ') || '无文件级变更', 'ok');
+  state.review = { open: true, path: null, lines: [], loading: false, error: '' };
+  render(); await refreshEnvironment();
 }
 async function applyWorkspace(picked, activityTitle) { if (!picked) return; const session = current(); if (!session) return; if (session.workspace !== picked) session.localChanges = []; session.workspace = picked; session.environment = null; session.updatedAt = Date.now(); state.review = { open: false, path: null, lines: [], loading: false, error: '' }; setReviewOpen(false); persist(); render(); addActivity(activityTitle, shortPath(picked), 'ok'); await refreshEnvironment(); taskInput.focus(); }
 async function chooseWorkspace() { await applyWorkspace(await window.seecoderDesktop.chooseWorkspace(), '已选择工作区'); }
@@ -362,6 +414,22 @@ function handleRunnerEvent(payload) {
     state.eventSequences.set(key, payload.sequence);
   }
   const { event, data } = payload || {};
+  if (event === 'changeset_updated') {
+    const session = current();
+    if (session && data?.changeset_id) {
+      if (!Array.isArray(session.changesets)) session.changesets = [];
+      const existing = session.changesets.find((item) => item.id === data.changeset_id);
+      const summary = { id: data.changeset_id, files: Array.isArray(data.files) ? data.files : [], tool: data.tool || '', directory: Boolean(data.directory), updatedAt: Date.now() };
+      if (existing) Object.assign(existing, summary); else session.changesets.push(summary);
+      persist(); renderConversation(); renderReview();
+      addActivity('ChangeSet 已记录', summary.files.length ? summary.files.join(', ') : (summary.tool || '目录操作'), 'ok');
+    }
+    return;
+  }
+  if (event === 'changeset_error') {
+    addActivity('ChangeSet 记录警告', data?.message || '本次变更无法完整记录。', 'error');
+    return;
+  }
   if (event === 'usage') { state.usageTotal = data?.total_tokens || state.usageTotal; setCost(state.usageTotal); return; }
   if (event === 'token') { const el = ensureLiveAgent(); if (el) { liveAgentText += (data?.text || ''); el.classList.add('markdown'); el.innerHTML = markdownToHtml(liveAgentText); conversation.scrollTop = conversation.scrollHeight; } return; }
   if (event === 'reasoning') { addActivity('模型思考', data?.text || '', ''); return; }

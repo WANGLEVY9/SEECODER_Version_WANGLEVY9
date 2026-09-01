@@ -115,6 +115,51 @@ ipcMain.handle("seecoder:create-workspace", async (_event, payload) => {
 
 ipcMain.handle("seecoder:capabilities", () => desktopCapabilities());
 
+function validChangesetId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(value);
+}
+
+function changesetDirectory() {
+  return path.join(projectRoot, "runs", "changesets");
+}
+
+ipcMain.handle("seecoder:list-changesets", async (_event, rawWorkspace) => {
+  if (typeof rawWorkspace !== "string" || !rawWorkspace.trim()) return { ok: false, error: "请选择有效工作区。", changesets: [] };
+  const workspace = path.resolve(rawWorkspace);
+  try {
+    if (!(await fs.stat(workspace)).isDirectory()) return { ok: false, error: "工作区目录不可用。", changesets: [] };
+    const names = await fs.readdir(changesetDirectory());
+    const changesets = [];
+    for (const name of names.filter((value) => value.endsWith(".json")).slice(0, 200)) {
+      try {
+        const raw = JSON.parse(await fs.readFile(path.join(changesetDirectory(), name), "utf8"));
+        if (!validChangesetId(raw?.id) || path.resolve(String(raw?.workspace || "")) !== workspace) continue;
+        changesets.push({ id: raw.id, run_id: raw.run_id, workspace, created_at: raw.created_at, records: Array.isArray(raw.records) ? raw.records.map((record) => ({ path: record.path, tool: record.tool, before_exists: record.before_exists, after_exists: record.after_exists, before_hash: record.before_hash, after_hash: record.after_hash })) : [], directory_operations: Array.isArray(raw.directory_operations) ? raw.directory_operations : [] });
+      } catch { /* Ignore incomplete or untrusted journal entries. */ }
+    }
+    changesets.sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
+    return { ok: true, changesets };
+  } catch {
+    return { ok: true, changesets: [] };
+  }
+});
+
+ipcMain.handle("seecoder:rollback-changeset", async (_event, payload) => {
+  const rawWorkspace = payload?.workspace;
+  const id = payload?.changesetId;
+  if (typeof rawWorkspace !== "string" || !rawWorkspace.trim() || !validChangesetId(id)) return { ok: false, error: "工作区或 ChangeSet 标识无效。" };
+  const workspace = path.resolve(rawWorkspace);
+  try {
+    if (!(await fs.stat(workspace)).isDirectory()) return { ok: false, error: "工作区目录不可用。" };
+  } catch { return { ok: false, error: "工作区目录不可用。" }; }
+  try {
+    const { stdout } = await execFileAsync(findUv(), ["run", "seecoder", "rollback-changeset", "--workspace", workspace, "--journal-dir", changesetDirectory(), "--changeset-id", id], { cwd: projectRoot, timeout: 10_000, maxBuffer: 128 * 1024, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    return JSON.parse(stdout);
+  } catch (error) {
+    try { return JSON.parse(error?.stdout || ""); } catch { return { ok: false, error: error?.message || "无法执行 ChangeSet 回退。" }; }
+  }
+});
+
 async function gitOutput(workspace, args) {
   try {
     const { stdout } = await execFileAsync("git", ["-C", workspace, ...args], {

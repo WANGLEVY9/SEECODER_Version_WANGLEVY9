@@ -359,6 +359,11 @@ final class DesktopStore: ObservableObject {
   }
   private func handleEvent(_ event: String, data: [String: Any]) {
     switch event {
+    case "changeset_updated":
+      let files = (data["files"] as? [String] ?? []).joined(separator: ", ")
+      addTimeline("ChangeSet 已记录", detail: files.isEmpty ? (data["tool"] as? String ?? "目录操作") : files, tone: .success)
+    case "changeset_error":
+      addTimeline("ChangeSet 记录警告", detail: data["message"] as? String ?? "本次变更无法完整记录", tone: .warning)
     case "token": if let text = data["text"] as? String { appendStreaming(text) }
     case "reasoning": if let text = data["text"] as? String, !text.isEmpty { addTimeline("模型思考", detail: text, tone: .info) }
     case "run_started":

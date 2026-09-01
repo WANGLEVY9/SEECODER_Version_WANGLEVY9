@@ -85,6 +85,7 @@ flowchart LR
 | 模型交互 | 原生 tool-calling、reasoning 内容保留、流式增量、usage 统计、有限重试 | 只适配协议，不托管代码执行 |
 | 上下文与记忆 | 历史裁剪、上下文压缩、`SEECODER.md`/`AGENTS.md` 项目指引、Skills 加载 | 指引不能扩大工具权限 |
 | 可观测性 | 本地 JSONL 事件、脱敏 trace、工具成功/失败、审批和终止状态 | trace 默认写到工作区外 |
+| 变更审阅基础 | 写入前基线、前后 SHA-256、工作区外 ChangeSet journal、哈希冲突保护 | 当前已记录并展示 ChangeSet；桌面回退入口仍在下一阶段 |
 | 桌面端 | SwiftUI 三栏会话界面、实时轨迹、审阅 diff、工具/Skills 面板、可调整布局 | Electron 仅保留兼容实现 |
 
 ## 自研实现与关键决策

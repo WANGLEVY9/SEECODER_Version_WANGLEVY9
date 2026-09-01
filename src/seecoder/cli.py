@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from seecoder import __version__
+from seecoder.changesets import ChangeSetJournal
 from seecoder.config import ConfigError, Settings
 from seecoder.model_client import OpenAICompatibleClient, RetryingModelClient
 from seecoder.runner import AgentRunner
@@ -102,6 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--resume", type=Path, help="resume a saved conversation from this JSON file")
     chat.add_argument("--save", type=Path, help="save the conversation to this JSON file after each turn")
     chat.add_argument("--session-id", help="stable local session identifier for the event protocol")
+
+    rollback = subcommands.add_parser("rollback-changeset", help="safely roll back one local ChangeSet")
+    rollback.add_argument("--workspace", type=Path, required=True, help="workspace owning the ChangeSet")
+    rollback.add_argument("--journal-dir", type=Path, required=True, help="external ChangeSet journal directory")
+    rollback.add_argument("--changeset-id", required=True, help="UUID of the ChangeSet to roll back")
     return parser
 
 
@@ -356,6 +362,15 @@ def _run_chat(args: Any, settings: Settings, trace: TraceWriter, workspace: Path
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.subcommand == "rollback-changeset":
+        workspace = args.workspace.expanduser().resolve()
+        journal_dir = args.journal_dir.expanduser().resolve()
+        if not workspace.is_dir():
+            print(json.dumps({"ok": False, "error": "Workspace is not an existing directory."}, ensure_ascii=False))
+            return 2
+        result = ChangeSetJournal(workspace, journal_dir).rollback(args.changeset_id)
+        print(json.dumps(result, ensure_ascii=False, default=str), flush=True)
+        return 0 if result.get("ok") else 2
     if args.subcommand not in {"run", "chat"}:
         return 2
     workspace = args.workspace.expanduser().resolve()

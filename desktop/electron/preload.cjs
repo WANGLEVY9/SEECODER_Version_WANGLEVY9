@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld("seecoderDesktop", {
   createWorkspace: (payload) => ipcRenderer.invoke("seecoder:create-workspace", payload),
   inspectEnvironment: (workspace) => ipcRenderer.invoke("seecoder:inspect-environment", workspace),
   readDiff: (payload) => ipcRenderer.invoke("seecoder:read-diff", payload),
+  listChangesets: (workspace) => ipcRenderer.invoke("seecoder:list-changesets", workspace),
+  rollbackChangeset: (payload) => ipcRenderer.invoke("seecoder:rollback-changeset", payload),
   startChat: (payload) => ipcRenderer.invoke("seecoder:start-chat", payload),
   sendChatTask: (payload) => ipcRenderer.invoke("seecoder:send-chat-task", payload),
   stopChat: (sessionId) => ipcRenderer.invoke("seecoder:stop-chat", sessionId),

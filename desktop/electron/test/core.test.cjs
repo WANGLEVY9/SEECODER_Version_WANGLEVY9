@@ -78,7 +78,7 @@ test("unified diff parser classifies lines for the local review panel", () => {
 });
 
 test("desktop capability handshake advertises ordered session events", () => {
-  assert.deepEqual(desktopCapabilities(), { protocolVersion: 3, features: ["local_git_diff", "ordered_session_events", "persisted_approval"] });
+  assert.deepEqual(desktopCapabilities(), { protocolVersion: 3, features: ["local_git_diff", "ordered_session_events", "persisted_approval", "changeset_journal"] });
 });
 
 test("workspace creator accepts only one safe directory component", () => {
