@@ -5,12 +5,24 @@ import AppKit
 final class DesktopAppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.activateWindow() }
+    // SwiftUI may create the WindowGroup just after the delegate callback.
+    // Schedule activation on the next run-loop turn and retry once if the
+    // window has not been materialized yet.
+    DispatchQueue.main.async { self.activateWindow(retry: true) }
   }
 
-  func activateWindow() {
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    if !flag { activateWindow(retry: false) }
+    return true
+  }
+
+  func activateWindow(retry: Bool = false) {
     NSApp.activate(ignoringOtherApps: true)
-    NSApp.windows.first(where: { $0.isVisible })?.makeKeyAndOrderFront(nil)
+    if let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey }) ?? NSApp.windows.first(where: { $0.canBecomeKey }) {
+      window.makeKeyAndOrderFront(nil)
+    } else if retry {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.activateWindow(retry: false) }
+    }
   }
 }
 

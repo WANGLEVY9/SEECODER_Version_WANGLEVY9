@@ -11,6 +11,12 @@ existing_pids=$(pgrep -f '/SEECODERDesktop$' || true)
 if [ -n "$existing_pids" ]; then
   kill $existing_pids || true
 fi
+# Keep compiler caches inside the checkout. This avoids a stale or read-only
+# user cache preventing the app from being built from a normal Terminal shell.
+cache_dir="$script_dir/swiftui/.build/module-cache"
+mkdir -p "$cache_dir/swift" "$cache_dir/clang"
+export SWIFT_MODULECACHE_PATH="$cache_dir/swift"
+export CLANG_MODULE_CACHE_PATH="$cache_dir/clang"
 swift build
 
 # Launch as a real macOS application bundle. SwiftPM's bare executable has no
@@ -32,11 +38,10 @@ cp -R "$build_dir/SEECODERDesktop_SEECODERDesktop.bundle" "$bundle_dir/"
 cp "$script_dir/swiftui/Resources/Info.plist" "$bundle_dir/Contents/Info.plist"
 chmod +x "$bundle_dir/Contents/MacOS/SEECODERDesktop"
 
-# Launch the bundle executable in the foreground. `open -n` returns
-# immediately and can hide a runtime layout failure behind a successful
-# LaunchServices exit code. Foreground execution keeps stderr visible and
-# lets Ctrl-C stop the exact development instance. The project root is
-# explicit so Git and the local AgentRunner never resolve relative to
-# `.build` or `Contents/MacOS`.
+# Launch through LaunchServices so macOS creates and activates the app window
+# reliably. `-n` guarantees a fresh development instance and `-W` keeps this
+# command attached until that instance closes. The bundle can locate the repo
+# from its own path; the explicit environment is also retained for direct
+# process lookups made by the app.
 export SEECODER_PROJECT_ROOT="$project_root"
-exec "$bundle_dir/Contents/MacOS/SEECODERDesktop"
+exec open -n -W "$bundle_dir"
