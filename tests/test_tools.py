@@ -194,9 +194,24 @@ class LocalToolsTests(unittest.TestCase):
         self.assertEqual(tool._restricted_argv({"argv": ["npm", "test"]}), ["npm", "test"])
         self.assertEqual(tool._restricted_argv({"argv": ["cargo", "check"]}), ["cargo", "check"])
         self.assertEqual(tool._restricted_argv({"argv": ["swift", "build"]}), ["swift", "build"])
+        self.assertEqual(tool._restricted_argv({"argv": ["java", "-version"]}), ["java", "-version"])
+        self.assertEqual(tool._restricted_argv({"argv": ["mvn", "-version"]}), ["mvn", "-version"])
+        self.assertEqual(tool._restricted_argv({"argv": ["node", "-v"]}), ["node", "-v"])
+        self.assertEqual(tool._restricted_argv({"argv": ["npm", "-v"]}), ["npm", "-v"])
+        self.assertEqual(tool._restricted_argv({"argv": ["mvn", "test"]}), ["mvn", "test"])
         blocked = tool._restricted_argv({"argv": ["npm", "install"]})
         self.assertFalse(blocked.ok)
         self.assertIn("limited", blocked.error.message)
+
+    def test_missing_restricted_executable_is_environment_evidence(self) -> None:
+        tool = RunCommandTool(self.boundary, execution_mode="restricted")
+        result = tool.execute({"argv": ["mvn", "-version"]})
+        # The host running the tests may or may not have Maven installed. If
+        # it is absent, this must be a recoverable command observation rather
+        # than a ToolRegistry-level FilesystemError that consumes the runner's
+        # repeated-error budget.
+        self.assertTrue(result.ok)
+        self.assertIn("exit_code", result.data)
 
     def test_mutation_tools_cannot_write_protected_directories(self) -> None:
         protected = self.root / ".git"

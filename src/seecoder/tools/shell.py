@@ -27,10 +27,14 @@ _RESTRICTED_META_CHARACTERS = frozenset(";|&<>`$()\n\r")
 _RESTRICTED_COMMANDS = frozenset({
     "python", "python3", "python3.12", "pytest", "ruff", "black", "git",
     "node", "npm", "pnpm", "yarn", "bun", "cargo", "go", "swift", "swiftc", "dotnet",
+    "java", "javac", "mvn", "gradle",
 })
 _PYTHON_MODULES = frozenset({"unittest", "pytest", "compileall", "ruff"})
 _GIT_READ_ONLY_SUBCOMMANDS = frozenset({"diff", "status", "log", "show", "ls-files", "rev-parse"})
 _PACKAGE_SCRIPT_NAMES = frozenset({"test", "lint", "build", "check", "typecheck", "format", "fmt"})
+_VERSION_PROBE_FLAGS = frozenset({"--version", "-version", "-v", "-V", "version"})
+_MAVEN_GOALS = frozenset({"test", "verify", "package", "compile"})
+_GRADLE_TASKS = frozenset({"test", "check", "build", "classes", "assemble"})
 
 _HOST_SHELL_PARAMETERS: dict[str, Any] = {
     "type": "object",
@@ -89,7 +93,11 @@ def _drain(stream: Any, capture: _BoundedCapture) -> None:
 class RunCommandTool:
     capability = "command"
     name = "run_command"
-    description = "Run a bounded local command and return bounded stdout/stderr."
+    description = (
+        "Run a bounded local command and return bounded stdout/stderr. In restricted mode, pass a literal "
+        "argv array only: safe tool-version probes and project validation/build commands are allowed; package "
+        "installation, arbitrary shell text, and destructive commands are blocked."
+    )
     parameters = _HOST_SHELL_PARAMETERS
 
     def __init__(
@@ -135,15 +143,30 @@ class RunCommandTool:
     def _execute(self, invocation: str | list[str], *, timeout_s: int, shell: bool, display: str) -> ToolResult:
 
         started = time.monotonic()
-        process = subprocess.Popen(
-            invocation,
-            cwd=self.boundary.root,
-            shell=shell,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=self._sanitized_environment(),
-            start_new_session=os.name != "nt",
-        )
+        try:
+            process = subprocess.Popen(
+                invocation,
+                cwd=self.boundary.root,
+                shell=shell,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=self._sanitized_environment(),
+                start_new_session=os.name != "nt",
+            )
+        except FileNotFoundError:
+            # A missing compiler or package manager is useful environment
+            # evidence, not an AgentRunner fault. Model code already treats a
+            # non-zero exit as a signal to choose another validation path.
+            return ToolResult.success(
+                {
+                    "command": display,
+                    "exit_code": 127,
+                    "stdout": "",
+                    "stderr": "Executable was not found in PATH.",
+                    "duration_ms": round((time.monotonic() - started) * 1_000),
+                },
+                meta={"unavailable": True},
+            )
         assert process.stdout is not None and process.stderr is not None
         stdout_capture = _BoundedCapture(self.max_output_chars)
         stderr_capture = _BoundedCapture(self.max_output_chars)
@@ -201,6 +224,11 @@ class RunCommandTool:
                 "RestrictedCommand",
                 f"'{program}' is not allowed in restricted mode. Use a dedicated local tool when available (for example delete_file for file cleanup).",
             )
+        # Exact version probes are read-only and are required before choosing
+        # a language-specific validation path. Keep this narrow: one program
+        # and one flag, with no shell, paths, or extra arguments.
+        if len(argv) == 2 and argv[1] in _VERSION_PROBE_FLAGS:
+            return argv
         if program.startswith("python"):
             if len(argv) < 3 or argv[1] != "-m" or argv[2] not in _PYTHON_MODULES:
                 return ToolResult.failure(
@@ -213,6 +241,12 @@ class RunCommandTool:
         elif program in {"npm", "pnpm", "yarn", "bun"}:
             if not _valid_package_command(argv):
                 return ToolResult.failure("RestrictedCommand", "package-manager commands are limited to test, lint, build, check, typecheck, or format scripts")
+        elif program == "mvn":
+            if len(argv) < 2 or argv[1] not in _MAVEN_GOALS:
+                return ToolResult.failure("RestrictedCommand", "mvn is limited to compile, test, verify, and package")
+        elif program == "gradle":
+            if len(argv) < 2 or argv[1] not in _GRADLE_TASKS:
+                return ToolResult.failure("RestrictedCommand", "gradle is limited to test, check, build, classes, and assemble")
         elif program == "cargo":
             if len(argv) < 2 or argv[1] not in {"test", "check", "build", "clippy", "fmt"}:
                 return ToolResult.failure("RestrictedCommand", "cargo is limited to test, check, build, clippy, and fmt")
@@ -228,6 +262,8 @@ class RunCommandTool:
         elif program == "node":
             if len(argv) < 3 or argv[1] != "--check":
                 return ToolResult.failure("RestrictedCommand", "node is limited to --check for syntax validation")
+        elif program in {"java", "javac"}:
+            return ToolResult.failure("RestrictedCommand", "java and javac are limited to one version-probe flag")
         elif program == "dotnet":
             if len(argv) < 2 or argv[1] not in {"test", "build"}:
                 return ToolResult.failure("RestrictedCommand", "dotnet is limited to test and build")
