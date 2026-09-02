@@ -86,7 +86,7 @@ struct ChatMessage: Identifiable, Codable, Hashable {
   init(_ role: Role, _ content: String) { id = UUID(); self.role = role; self.content = content; createdAt = .now }
 }
 
-struct LocalChange: Codable, Hashable {
+struct LocalChange: Codable, Hashable, Sendable {
   var path: String
   var added: Int
   var deleted: Int
@@ -400,26 +400,22 @@ final class DesktopStore: ObservableObject {
   }
   func inspectDiff(_ file: String) {
     guard let workspace = current?.workspace, !workspace.isEmpty else { return }; reviewFile = file
-    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = ["git", "-C", workspace, "diff", "HEAD", "--no-ext-diff", "--no-color", "--unified=3", "--", file]
-    let pipe = Pipe(); p.standardOutput = pipe
-    do { try p.run(); p.waitUntilExit(); var text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self); if text.isEmpty { let absolute = URL(fileURLWithPath: workspace).appendingPathComponent(file).path; text = run("git", ["-C", workspace, "diff", "--no-index", "--no-ext-diff", "--no-color", "--unified=3", "/dev/null", absolute]) }; diffLines = text.isEmpty ? [DiffLine(kind: .context, text: "未检测到可显示的 Git 差异，或该文件已被删除。")] : text.split(separator: "\n", omittingEmptySubsequences: false).map { classifyDiff(String($0)) } }
-    catch { diffLines = [DiffLine(kind: .context, text: "无法读取本地 Git 差异。")] }
+    let absolute = URL(fileURLWithPath: workspace).appendingPathComponent(file).path
+    var text = isGitWorkspace(workspace)
+      ? run("git", ["-C", workspace, "diff", "HEAD", "--no-ext-diff", "--no-color", "--unified=3", "--", file])
+      : ""
+    if text.isEmpty, FileManager.default.fileExists(atPath: absolute) {
+      text = run("git", ["diff", "--no-index", "--no-ext-diff", "--no-color", "--unified=3", "/dev/null", absolute])
+    }
+    diffLines = text.isEmpty
+      ? [DiffLine(kind: .context, text: "未检测到可显示的 Git 差异，或该文件已被删除。")]
+      : text.split(separator: "\n", omittingEmptySubsequences: false).map { classifyDiff(String($0)) }
   }
   func changedFiles() -> [(String, Int, Int)] {
-    guard let workspace = current?.workspace, !workspace.isEmpty else { return [] }
-    let tracked = run("git", ["-C", workspace, "diff", "HEAD", "--numstat"])
-    var rows = tracked.split(separator: "\n").compactMap { row -> (String, Int, Int)? in
-      let pieces = row.split(separator: "\t", maxSplits: 2); guard pieces.count == 3 else { return nil }
-      return (String(pieces[2]), Int(pieces[0]) ?? 0, Int(pieces[1]) ?? 0)
-    }
-    let status = run("git", ["-C", workspace, "status", "--porcelain=v1", "--untracked-files=all"])
-    for line in status.split(separator: "\n") where line.hasPrefix("?? ") {
-      let path = String(line.dropFirst(3)); let url = URL(fileURLWithPath: workspace).appendingPathComponent(path)
-      guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
-      let additions = content.isEmpty ? 0 : content.split(separator: "\n", omittingEmptySubsequences: false).count - (content.hasSuffix("\n") ? 1 : 0)
-      rows.append((path, additions, 0))
-    }
-    return rows.isEmpty ? (current?.localChanges ?? []).map { ($0.path, $0.added, $0.deleted) } : rows
+    // This method is called while SwiftUI evaluates the view body. It must be
+    // pure and instantaneous: launching git here can block the main thread
+    // when a selected folder is not a repository and git fills stderr.
+    return (current?.localChanges ?? []).map { ($0.path, $0.added, $0.deleted) }
   }
   private func consume(_ chunk: String) {
     outputBuffer += chunk
@@ -610,7 +606,35 @@ final class DesktopStore: ObservableObject {
     addTimeline("工作区路径已更新", detail: newURL.path, tone: .success)
     save()
   }
-  private func run(_ executable: String, _ arguments: [String]) -> String { let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = [executable] + arguments; let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe(); do { try p.run(); p.waitUntilExit(); return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) } catch { return "" } }
+  private func run(_ executable: String, _ arguments: [String]) -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = [executable] + arguments
+    let pipe = Pipe()
+    // Drain standard output while the command runs, and merge stderr into the
+    // same stream. Waiting before reading a separate stderr pipe can deadlock
+    // on ordinary git diagnostics from non-repository folders.
+    process.standardOutput = pipe
+    process.standardError = pipe
+    do {
+      try process.run()
+      let data = pipe.fileHandleForReading.readDataToEndOfFile()
+      process.waitUntilExit()
+      return String(decoding: data, as: UTF8.self)
+    } catch {
+      return ""
+    }
+  }
+  private func isGitWorkspace(_ workspace: String) -> Bool {
+    var candidate = URL(fileURLWithPath: workspace, isDirectory: true).standardizedFileURL
+    for _ in 0..<12 {
+      if FileManager.default.fileExists(atPath: candidate.appendingPathComponent(".git").path) { return true }
+      let parent = candidate.deletingLastPathComponent()
+      if parent.path == candidate.path { break }
+      candidate = parent
+    }
+    return false
+  }
   private func agentInvocation(root: URL, workspace: String, storage: String, sessionID: String) -> (executable: URL, arguments: [String])? {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     let configured = ProcessInfo.processInfo.environment["SEECODER_UV"]
