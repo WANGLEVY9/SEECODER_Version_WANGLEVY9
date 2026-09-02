@@ -159,13 +159,23 @@ function renderWelcome() {
   conversation.innerHTML = '<section class="welcome"><div><div class="welcome-mark"><img src="assets/seecoder-logo.png" alt="SEECODER" /></div><h1>从一个真实任务开始</h1><p>选择你的工作区，描述希望完成的修改。SEECODER 会在本地读取文件、执行受限命令并给出可审计的结果。</p><div class="suggestion-grid">' + cards + '</div><span class="hint">⌘ ↵ 发送任务</span></div></section>';
   conversation.querySelectorAll('.suggestion-card').forEach((card) => card.addEventListener('click', () => { taskInput.value = card.dataset.task; taskInput.focus(); }));
 }
+function workUpdateHtml(message) {
+  const note = typeof message.note === 'string' && message.note.trim()
+    ? '<details class="work-update-note"><summary>补充说明（已折叠）</summary><div>' + escapeText(message.note) + '</div></details>' : '';
+  return '<article class="message progress"><div class="message-meta"><span class="dot"></span>工作进展</div><div class="message-body"><strong>' + escapeText(message.content) + '</strong>' + (message.detail ? '<small>' + escapeText(message.detail) + '</small>' : '') + note + '</div></article>';
+}
 function renderConversation() {
   // Rendering a different persisted session invalidates the transient
   // streaming element from the previous run.
   liveAgentEl = null; liveAgentText = '';
   const session = current(); $('#session-title').textContent = session.title; $('#workspace-label').textContent = session.workspace || '尚未选择本地开发区域';
   if (!session.messages.length) { renderWelcome(); return; }
-  conversation.innerHTML = session.messages.map((message) => { const label = { user: '你', agent: 'SEECODER', system: '本地状态' }[message.role] || '本地状态'; const body = message.role === 'agent' ? markdownToHtml(message.content) : escapeText(message.content); return '<article class="message ' + message.role + '"><div class="message-meta"><span class="dot"></span>' + label + '</div><div class="message-body' + (message.role === 'agent' ? ' markdown' : '') + '">' + body + '</div></article>'; }).join('') + planCard(session) + changeCard(session.environment, session);
+  conversation.innerHTML = session.messages.map((message) => {
+    if (message.role === 'progress') return workUpdateHtml(message);
+    const label = { user: '你', agent: 'SEECODER', system: '本地状态' }[message.role] || '本地状态';
+    const body = message.role === 'agent' ? markdownToHtml(message.content) : escapeText(message.content);
+    return '<article class="message ' + message.role + '"><div class="message-meta"><span class="dot"></span>' + label + '</div><div class="message-body' + (message.role === 'agent' ? ' markdown' : '') + '">' + body + '</div></article>';
+  }).join('') + planCard(session) + changeCard(session.environment, session);
   conversation.querySelectorAll('[data-diff-path]').forEach((button) => button.addEventListener('click', () => openReview(button.dataset.diffPath)));
   conversation.scrollTop = conversation.scrollHeight;
 }
@@ -211,6 +221,8 @@ function applyWorkspaceRename(oldPath, newPath) {
 }
 let liveAgentEl = null;
 let liveAgentText = '';
+let pendingVisibleCommentary = '';
+const activeWorkUpdate = { sessionId: null, index: -1, remaining: 0 };
 function ensureLiveAgent() {
   if (!liveAgentEl) {
     conversation.insertAdjacentHTML('beforeend', '<article class="message agent"><div class="message-meta"><span class="dot"></span>SEECODER</div><div class="message-body" data-live></div></article>');
@@ -219,6 +231,41 @@ function ensureLiveAgent() {
     conversation.scrollTop = conversation.scrollHeight;
   }
   return liveAgentEl;
+}
+function captureVisibleCommentary(text) {
+  if (pendingVisibleCommentary.length >= 700) return;
+  const normalized = String(text || '').replace(/\r/g, '');
+  pendingVisibleCommentary += normalized.slice(0, 700 - pendingVisibleCommentary.length);
+}
+function appendWorkUpdate(calls) {
+  if (!Array.isArray(calls) || !calls.length) return;
+  const labels = [...new Set(calls.map((call) => toolLabel(call?.name)))];
+  const purposes = calls.map((call) => String(call?.purpose || '').trim()).filter(Boolean);
+  const title = labels.length === 1 ? '正在处理：' + labels[0] : '正在处理 ' + labels.length + ' 项工作';
+  const detail = purposes.length ? purposes.slice(0, 2).join('；') : labels.join('、');
+  const session = current(); if (!session) return;
+  const lastUser = session.messages.map((message) => message.role).lastIndexOf('user');
+  const progressIndexes = session.messages.map((message, index) => message.role === 'progress' && index > lastUser ? index : -1).filter((index) => index >= 0);
+  if (progressIndexes.length >= 16) session.messages.splice(progressIndexes[0], 1);
+  session.messages.push({ role: 'progress', content: title, detail, note: pendingVisibleCommentary.trim(), createdAt: Date.now() });
+  activeWorkUpdate.sessionId = session.id;
+  activeWorkUpdate.index = session.messages.length - 1;
+  activeWorkUpdate.remaining = calls.length;
+  pendingVisibleCommentary = '';
+  session.updatedAt = Date.now(); persist(); renderConversation();
+}
+function completeWorkUpdate() {
+  const session = current();
+  if (!session || activeWorkUpdate.sessionId !== session.id || activeWorkUpdate.remaining <= 0) return;
+  activeWorkUpdate.remaining -= 1;
+  if (activeWorkUpdate.remaining > 0) return;
+  const update = session.messages[activeWorkUpdate.index];
+  if (update?.role === 'progress') {
+    update.content = update.content.startsWith('正在处理：')
+      ? update.content.replace('正在处理：', '已完成：') : '已完成本批工作';
+    session.updatedAt = Date.now(); persist(); renderConversation();
+  }
+  activeWorkUpdate.sessionId = null; activeWorkUpdate.index = -1;
 }
 function addActivity(title, detail = '', kind = '') { const entry = document.createElement('div'); entry.className = 'activity-entry ' + kind; entry.innerHTML = '<strong>' + escapeText(title) + '</strong>' + (detail ? '<small>' + escapeText(detail) + '</small>' : ''); activityList.prepend(entry); }
 const TOOL_LABELS = { read_file: '读取文件', search_files: '搜索文件', search_code: '检索代码', find_files: '查找文件', project_overview: '分析项目结构', write_file: '写入文件', apply_patch: '应用补丁', delete_file: '删除文件', create_directory: '创建目录', copy_file: '复制文件', move_file: '移动文件', rename_directory: '重命名目录', run_command: '运行命令', git_diff: '检查 Git 差异', git_status: '检查 Git 状态', git_log: '读取 Git 历史', git_show: '读取提交', web_search: '搜索资料' };
@@ -417,6 +464,7 @@ async function sendTask() {
   const fingerprint = session.id + '\u0000' + task;
   if (state.lastSubmission && state.lastSubmission.fingerprint === fingerprint && Date.now() - state.lastSubmission.at < 2_000) return;
   state.submitting = true;
+  pendingVisibleCommentary = '';
   state.lastSubmission = { fingerprint, at: Date.now() };
   appendMessage('user', task); taskInput.value = ''; activityList.innerHTML = ''; hideApproval(); render(); renderEnvironment(); setRunning(true); addActivity('启动本地 AgentRunner', '模式：' + state.mode + ' · 受限 argv 执行', 'ok');
   state.lastRun = { task, workspace: session.workspace, mode: state.mode };
@@ -469,7 +517,9 @@ function handleRunnerEvent(payload) {
     return;
   }
   if (event === 'usage') { state.usageTotal = data?.total_tokens || state.usageTotal; setCost(state.usageTotal); return; }
-  if (event === 'token') { const el = ensureLiveAgent(); if (el) { liveAgentText += (data?.text || ''); el.classList.add('markdown'); el.innerHTML = markdownToHtml(liveAgentText); conversation.scrollTop = conversation.scrollHeight; } return; }
+  // Do not turn every provider token into a growing chat bubble. The text is
+  // retained only as a bounded, folded note for the next concrete tool batch.
+  if (event === 'token') { captureVisibleCommentary(data?.text); return; }
   if (event === 'reasoning') { return; }
   if (event === 'tool_result' && data?.ok && data?.name === 'rename_directory') {
     const result = data?.data || {};
@@ -477,6 +527,7 @@ function handleRunnerEvent(payload) {
     if (result.workspace_renamed) applyWorkspaceRename(result.old_path, result.workspace_path || result.new_path);
   }
   if (event === 'tool_result' && data?.ok && ['write_file', 'apply_patch', 'delete_file', 'create_directory', 'copy_file', 'move_file'].includes(data?.name)) recordLocalChange(data.name, data?.data || {});
+  if (event === 'tool_result') completeWorkUpdate();
   if (event === 'approval_request') {
     showApproval('批准工具调用：' + (data?.name || '未知工具') + '？', () => approveCurrent(true), () => approveCurrent(false));
     addActivity('等待批准', data?.name || '', 'running'); return;
@@ -488,14 +539,14 @@ function handleRunnerEvent(payload) {
       const call = Array.isArray(data?.pending_calls) ? data.pending_calls.find((item) => item && item.name) : null;
       showApproval('批准工具调用：' + (call?.name || '未知工具') + '？', () => approveCurrent(true), () => approveCurrent(false));
       addActivity('等待批准', call?.name || '持久化审批状态', 'running');
-      liveAgentEl = null; liveAgentText = ''; setBadge('待批准', 'running'); render(); return;
+      liveAgentEl = null; liveAgentText = ''; pendingVisibleCommentary = ''; setBadge('待批准', 'running'); render(); return;
     }
     if (stateName === 'plan_proposed') {
       const planLines = planSteps.map((s) => '- ' + (s.description || s.tool)).join('\n');
       appendMessage('agent', planLines ? (data?.final_text || '') + '\n' + planLines : (data?.final_text || '计划已生成。'));
       addActivity('计划已生成，等待批准', planSteps.length + ' 步计划', 'running');
       showApproval('批准该计划并继续执行？', () => approveCurrent(true), () => approveCurrent(false));
-      liveAgentEl = null; liveAgentText = ''; setBadge('待批准', 'running'); render(); return;
+      liveAgentEl = null; liveAgentText = ''; pendingVisibleCommentary = ''; setBadge('待批准', 'running'); render(); return;
     }
     hideApproval();
     appendMessage('agent', data?.final_text || '任务结束，但没有收到可显示的总结。');
@@ -504,13 +555,14 @@ function handleRunnerEvent(payload) {
     const activityDetail = recoverable && stateName !== 'final'
       ? (data?.steps ?? 0) + ' 步 · 上一轮已保留，可继续发送下一条指令或重试'
       : (data?.steps ?? 0) + ' 步';
-    addActivity(reachedStepLimit ? '本轮达到执行上限' : '完成：' + stateName, activityDetail, stateName === 'final' ? 'ok' : (recoverable ? 'running' : 'error')); setRunning(false); liveAgentEl = null; liveAgentText = ''; setBadge(stateName === 'final' ? '已完成' : (recoverable ? '可继续' : '需处理'), stateName === 'final' ? 'ready' : (recoverable ? 'running' : 'error')); render(); refreshEnvironment(); return;
+    addActivity(reachedStepLimit ? '本轮达到执行上限' : '完成：' + stateName, activityDetail, stateName === 'final' ? 'ok' : (recoverable ? 'running' : 'error')); setRunning(false); liveAgentEl = null; liveAgentText = ''; pendingVisibleCommentary = ''; setBadge(stateName === 'final' ? '已完成' : (recoverable ? '可继续' : '需处理'), stateName === 'final' ? 'ready' : (recoverable ? 'running' : 'error')); render(); refreshEnvironment(); return;
   }
   if (event === 'model_request') { return; }
   if (event === 'tool_dispatch') {
     const calls = Array.isArray(data?.calls) ? data.calls : [];
     if (!calls.length) addActivity('准备本地动作', (data?.count ?? 0) + ' 个工具调用', 'running');
     calls.forEach((call) => addActivity('准备：' + toolLabel(call?.name), toolActionDetail(call?.name, call), 'running'));
+    appendWorkUpdate(calls);
     return;
   }
   if (event === 'tool_result') {

@@ -102,6 +102,13 @@ struct TimelineEvent: Identifiable, Hashable {
   let detail: String
   let tone: Tone
 }
+struct WorkUpdate: Identifiable, Hashable {
+  let id = UUID()
+  let title: String
+  let detail: String
+  let note: String
+  var isComplete = false
+}
 struct PendingApproval: Identifiable, Hashable {
   enum Kind: Hashable { case tool, plan }
   let id = UUID()
@@ -119,6 +126,10 @@ final class DesktopStore: ObservableObject {
   @Published var isRunning = false
   @Published var activity = ["桌面端已就绪 · 原生 SwiftUI"]
   @Published var timeline: [TimelineEvent] = []
+  // Main-chat progress is deliberately slimmer than the audit timeline. It is
+  // transient, grouped by model tool batch, and never stores provider-only
+  // reasoning deltas in local session history.
+  @Published var workUpdates: [WorkUpdate] = []
   @Published var pendingApproval: PendingApproval?
   @Published var reviewFile: String?
   @Published var diffLines: [DiffLine] = []
@@ -139,6 +150,9 @@ final class DesktopStore: ObservableObject {
   private var inputPipe: Pipe?
   private var outputBuffer = ""
   private var stopRequested = false
+  private var pendingVisibleCommentary = ""
+  private var activeWorkUpdateID: UUID?
+  private var outstandingToolResults = 0
   private var lastSubmittedTask: String?
   private var lastSubmittedAt: Date?
   private let legacyPersistenceKey = "seecoder.swiftui.sessions.v1"
@@ -184,9 +198,9 @@ final class DesktopStore: ObservableObject {
   func openNewConversation() { guard !isRunning else { return }; showNewConversation = true }
   func startSession(in workspace: String) {
     let session = SessionModel(workspace: workspace)
-    sessions.insert(session, at: 0); selectedID = session.id; showNewConversation = false; reviewFile = nil; diffLines = []; activity.insert("已在项目中创建新对话 · \(shortPath(workspace))", at: 0); save()
+    sessions.insert(session, at: 0); selectedID = session.id; showNewConversation = false; reviewFile = nil; diffLines = []; resetWorkUpdates(); activity.insert("已在项目中创建新对话 · \(shortPath(workspace))", at: 0); save()
   }
-  func select(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; reviewFile = nil; diffLines = []; save() }
+  func select(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; reviewFile = nil; diffLines = []; resetWorkUpdates(); save() }
   func chooseWorkspace() {
     let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "选择开发区域"
     if panel.runModal() == .OK, let url = panel.url {
@@ -287,7 +301,7 @@ final class DesktopStore: ObservableObject {
     // intentional retry remains available once this short window expires.
     if lastSubmittedTask == task, let lastSubmittedAt, Date.now.timeIntervalSince(lastSubmittedAt) < 2 { return }
     lastSubmittedTask = task; lastSubmittedAt = .now
-    sessions[index].messages.append(ChatMessage(.user, task)); sessions[index].title = sessions[index].title == "新对话" ? String(task.prefix(24)) : sessions[index].title; sessions[index].updatedAt = .now; draft = ""; isRunning = true; timeline = []; pendingApproval = nil; addTimeline("任务已提交", detail: "正在连接本地 AgentRunner", tone: .running); activity.insert("正在启动本地 AgentRunner", at: 0); save()
+    sessions[index].messages.append(ChatMessage(.user, task)); sessions[index].title = sessions[index].title == "新对话" ? String(task.prefix(24)) : sessions[index].title; sessions[index].updatedAt = .now; draft = ""; isRunning = true; timeline = []; resetWorkUpdates(); pendingApproval = nil; addTimeline("任务已提交", detail: "正在连接本地 AgentRunner", tone: .running); activity.insert("正在启动本地 AgentRunner", at: 0); save()
     if let process, process.isRunning, let inputPipe {
       do { try inputPipe.fileHandleForWriting.write(contentsOf: Data((task + "\n").utf8)); return }
       catch { self.process = nil; self.inputPipe = nil }
@@ -397,7 +411,10 @@ final class DesktopStore: ObservableObject {
       let status = data["status"] as? String ?? "proposed"
       addTimeline("计划状态：\(status)", detail: "\(completed)/\(items.count) 步已完成", tone: ["failed", "cancelled"].contains(status) ? .failure : status == "completed" ? .success : .running)
       if status == "cancelled" { pendingApproval = nil; isRunning = false }
-    case "token": if let text = data["text"] as? String { appendStreaming(text) }
+    // Provider text often contains a repetitive scratch narration before a
+    // tool call. Keep a bounded, user-visible excerpt for a collapsed note;
+    // do not append every delta as a permanent chat message.
+    case "token": if let text = data["text"] as? String { captureVisibleCommentary(text) }
     case "reasoning": break
     case "run_started":
       if let startedMode = data["mode"] as? String, ["ask", "plan", "auto"].contains(startedMode) { mode = startedMode }
@@ -407,6 +424,7 @@ final class DesktopStore: ObservableObject {
       let calls = data["calls"] as? [[String: Any]] ?? []
       if calls.isEmpty { addTimeline("准备本地动作", detail: "共 \(data["count"] ?? "-") 个工具调用", tone: .running) }
       for call in calls { let name = call["name"] as? String ?? "unknown"; addTimeline("准备：\(toolLabel(name))", detail: call["purpose"] as? String ?? "执行本地受限操作", tone: .running) }
+      addWorkUpdate(for: calls)
     case "tool_result":
       let name = data["name"] as? String ?? "unknown"; let ok = data["ok"] as? Bool ?? false
       let purpose = data["purpose"] as? String ?? "本地工具执行完成"
@@ -417,6 +435,7 @@ final class DesktopStore: ObservableObject {
          let oldPath = result["old_path"] as? String, let newPath = result["workspace_path"] as? String {
         applyAgentWorkspaceRename(oldPath: oldPath, newPath: newPath)
       }
+      completeWorkUnitIfNeeded()
     case "plan_proposal": let name = data["name"] as? String ?? "本地操作"; addTimeline("计划动作：\(toolLabel(name))", detail: data["description"] as? String ?? name, tone: .warning)
     case "approval_request":
       let name = data["name"] as? String ?? "本地操作"; let detail = "\(name) 需要用户确认后才会在本地执行"
@@ -471,7 +490,43 @@ final class DesktopStore: ObservableObject {
   }
   private func addTimeline(_ title: String, detail: String, tone: TimelineEvent.Tone) { timeline.append(TimelineEvent(title: title, detail: detail, tone: tone)); if timeline.count > 60 { timeline.removeFirst(timeline.count - 60) } }
   private func recordCLIError(_ text: String) { let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines); guard !cleaned.isEmpty else { return }; activity.insert("CLI: " + cleaned, at: 0); addTimeline("本地进程提示", detail: cleaned, tone: .info) }
-  private func appendStreaming(_ text: String) { guard let index = currentIndex else { return }; if sessions[index].messages.last?.role == .agent { sessions[index].messages[sessions[index].messages.count - 1] = ChatMessage(.agent, sessions[index].messages.last!.content + text) } else { sessions[index].messages.append(ChatMessage(.agent, text)) } }
+  private func resetWorkUpdates() {
+    workUpdates = []
+    pendingVisibleCommentary = ""
+    activeWorkUpdateID = nil
+    outstandingToolResults = 0
+  }
+  private func captureVisibleCommentary(_ text: String) {
+    // This is only the ordinary visible assistant channel. Provider reasoning
+    // deltas stay discarded in `handleEvent`, rather than being exposed as
+    // chain-of-thought or persisted locally.
+    guard pendingVisibleCommentary.count < 700 else { return }
+    let normalized = text.replacingOccurrences(of: "\r", with: "")
+    let remaining = 700 - pendingVisibleCommentary.count
+    pendingVisibleCommentary += String(normalized.prefix(remaining))
+  }
+  private func addWorkUpdate(for calls: [[String: Any]]) {
+    guard !calls.isEmpty else { return }
+    let labels = Array(Set(calls.map { toolLabel($0["name"] as? String ?? "unknown") })).sorted()
+    let title = labels.count == 1 ? "正在处理：\(labels[0])" : "正在处理 \(labels.count) 项工作"
+    let purposes = calls.compactMap { ($0["purpose"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    let detail = purposes.isEmpty ? labels.joined(separator: "、") : Array(purposes.prefix(2)).joined(separator: "；")
+    let note = pendingVisibleCommentary.trimmingCharacters(in: .whitespacesAndNewlines)
+    let update = WorkUpdate(title: title, detail: detail, note: note)
+    workUpdates.append(update)
+    if workUpdates.count > 16 { workUpdates.removeFirst(workUpdates.count - 16) }
+    activeWorkUpdateID = update.id
+    outstandingToolResults = calls.count
+    pendingVisibleCommentary = ""
+  }
+  private func completeWorkUnitIfNeeded() {
+    guard outstandingToolResults > 0 else { return }
+    outstandingToolResults -= 1
+    guard outstandingToolResults == 0, let activeWorkUpdateID,
+          let index = workUpdates.firstIndex(where: { $0.id == activeWorkUpdateID }) else { return }
+    workUpdates[index].isComplete = true
+    self.activeWorkUpdateID = nil
+  }
   private func append(_ role: ChatMessage.Role, _ text: String) { guard let index = currentIndex else { return }; sessions[index].messages.append(ChatMessage(role, text)); save() }
   private func recordLocalChange(name: String, result: [String: Any]) {
     guard let index = currentIndex else { return }
@@ -747,11 +802,35 @@ private struct ProjectSection: View {
 
 struct Conversation: View {
   @EnvironmentObject var store: DesktopStore
-  var body: some View { VStack(spacing: 0) { HStack { VStack(alignment: .leading, spacing: 3) { Text(store.current?.title ?? "新对话").font(.headline).foregroundStyle(Color.ink); Text(store.current?.workspace.isEmpty == false ? store.current!.workspace : "尚未选择本地开发区域").font(.caption).foregroundStyle(Color.muted).lineLimit(1) }; Spacer(); Menu { Button("选择其他工作区", action: store.chooseWorkspace); Button("重命名当前工作区", action: store.openRenameCurrentWorkspace).disabled(!store.hasWorkspace || store.isRunning) } label: { Label("工作区", systemImage: "folder") }.menuStyle(.borderlessButton); Button("选择工作区", action: store.chooseWorkspace).buttonStyle(.bordered) }.padding(.horizontal, 22).frame(height: 60); Divider(); ScrollViewReader { proxy in ScrollView { Group { if store.current?.messages.isEmpty != false { Onboarding() } else { LazyVStack(alignment: .leading, spacing: 18) { ForEach(store.current?.messages ?? []) { message in MessageBubble(message: message) }; if let plan = store.current?.taskPlan { PlanSummary(plan: plan) }; if store.pendingApproval != nil { ApprovalCard() }; ChangeSummary() } } }.frame(maxWidth: 720, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity, alignment: .center) }.onChange(of: store.pendingApproval?.id) { _, id in if id != nil { proxy.scrollTo("approval-card", anchor: .bottom) } }.onChange(of: store.current?.messages.count) { _, _ in if let id = store.current?.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } } }; Composer() }.background(Color.canvas) }
+  var body: some View { VStack(spacing: 0) { HStack { VStack(alignment: .leading, spacing: 3) { Text(store.current?.title ?? "新对话").font(.headline).foregroundStyle(Color.ink); Text(store.current?.workspace.isEmpty == false ? store.current!.workspace : "尚未选择本地开发区域").font(.caption).foregroundStyle(Color.muted).lineLimit(1) }; Spacer(); Menu { Button("选择其他工作区", action: store.chooseWorkspace); Button("重命名当前工作区", action: store.openRenameCurrentWorkspace).disabled(!store.hasWorkspace || store.isRunning) } label: { Label("工作区", systemImage: "folder") }.menuStyle(.borderlessButton); Button("选择工作区", action: store.chooseWorkspace).buttonStyle(.bordered) }.padding(.horizontal, 22).frame(height: 60); Divider(); ScrollViewReader { proxy in ScrollView { Group { if store.current?.messages.isEmpty != false { Onboarding() } else { LazyVStack(alignment: .leading, spacing: 18) { ForEach(store.current?.messages ?? []) { message in MessageBubble(message: message) }; ForEach(store.workUpdates) { update in WorkUpdateCard(update: update) }; if let plan = store.current?.taskPlan { PlanSummary(plan: plan) }; if store.pendingApproval != nil { ApprovalCard() }; ChangeSummary() } } }.frame(maxWidth: 720, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 26).frame(maxWidth: .infinity, alignment: .center) }.onChange(of: store.pendingApproval?.id) { _, id in if id != nil { proxy.scrollTo("approval-card", anchor: .bottom) } }.onChange(of: store.current?.messages.count) { _, _ in if let id = store.current?.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } }.onChange(of: store.workUpdates.count) { _, _ in if let id = store.workUpdates.last?.id { proxy.scrollTo(id, anchor: .bottom) } } }; Composer() }.background(Color.canvas) }
 }
 
 struct Onboarding: View { @EnvironmentObject var store: DesktopStore; var body: some View { VStack(spacing: 12) { Spacer(minLength: 48); Image("seecoder-logo", bundle: .module).resizable().frame(width: 50, height: 50).clipShape(RoundedRectangle(cornerRadius: 15)); Text("开始一个新项目").font(.system(size: 27, weight: .bold)).foregroundStyle(Color.ink); Text("选择一个本地文件夹作为项目，或创建名为“新项目”的文件夹。\n项目下可以继续创建多个独立会话。").font(.system(size: 14)).multilineTextAlignment(.center).foregroundStyle(Color.muted); HStack { Button("选择本地项目", action: store.chooseWorkspace).buttonStyle(.borderedProminent); Button("新建项目", action: store.openCreateWorkspace).buttonStyle(.bordered) }; Spacer(minLength: 28) }.frame(maxWidth: .infinity, minHeight: 260) } }
-struct MessageBubble: View { let message: ChatMessage; var body: some View { VStack(alignment: .leading, spacing: 7) { Label(message.role == .user ? "你" : message.role == .agent ? "SEECODER" : "本地状态", systemImage: message.role == .user ? "person.fill" : "sparkle").font(.caption.weight(.semibold)).foregroundStyle(message.role == .user ? Color.brandBlue : Color.brandGreen); Group { if message.role == .agent { MarkdownMessage(source: message.content) } else { Text(message.content).textSelection(.enabled).font(.system(size: 14)).lineSpacing(5).foregroundStyle(Color.ink) } }.padding(15).frame(maxWidth: 760, alignment: .leading).background(message.role == .user ? Color.brandCyan.opacity(0.14) : Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) }.id(message.id) } }
+struct MessageBubble: View { let message: ChatMessage; private var shouldCollapse: Bool { message.role == .agent && message.content.count > 1_600 }; var body: some View { VStack(alignment: .leading, spacing: 7) { Label(message.role == .user ? "你" : message.role == .agent ? "SEECODER" : "本地状态", systemImage: message.role == .user ? "person.fill" : "sparkle").font(.caption.weight(.semibold)).foregroundStyle(message.role == .user ? Color.brandBlue : Color.brandGreen); Group { if message.role == .agent && shouldCollapse { DisclosureGroup("详细说明（已折叠）") { MarkdownMessage(source: message.content).padding(.top, 8) }.font(.system(size: 14)).foregroundStyle(Color.ink) } else if message.role == .agent { MarkdownMessage(source: message.content) } else { Text(message.content).textSelection(.enabled).font(.system(size: 14)).lineSpacing(5).foregroundStyle(Color.ink) } }.padding(15).frame(maxWidth: 760, alignment: .leading).background(message.role == .user ? Color.brandCyan.opacity(0.14) : Color.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1)) }.id(message.id) } }
+struct WorkUpdateCard: View {
+  let update: WorkUpdate
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 8) {
+        Image(systemName: update.isComplete ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+          .foregroundStyle(update.isComplete ? Color.brandGreen : Color.brandBlue)
+        Text(update.isComplete ? (update.title.hasPrefix("正在处理：") ? update.title.replacingOccurrences(of: "正在处理：", with: "已完成：") : "已完成本批工作") : update.title)
+          .font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.ink)
+      }
+      if !update.detail.isEmpty { Text(update.detail).font(.system(size: 13)).foregroundStyle(Color.muted).lineLimit(2) }
+      if !update.note.isEmpty {
+        DisclosureGroup("补充说明（已折叠）") {
+          Text(update.note).font(.system(size: 12)).lineSpacing(3).foregroundStyle(Color.muted).textSelection(.enabled).padding(.top, 5)
+        }
+        .font(.system(size: 12, weight: .medium)).foregroundStyle(Color.muted)
+      }
+    }
+    .padding(13).frame(maxWidth: 760, alignment: .leading)
+    .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.line, lineWidth: 1))
+    .id(update.id)
+  }
+}
 struct MarkdownMessage: View {
   private enum Block { case prose([String]), code(language: String, body: String) }
   let source: String

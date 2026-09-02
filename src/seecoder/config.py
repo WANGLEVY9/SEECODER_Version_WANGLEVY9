@@ -51,10 +51,11 @@ class Settings:
     api_key: str
     model: str
     base_url: str = "https://api.openai.com/v1"
-    # A modest scaffolding task commonly needs inspection, several focused
-    # edits, validation, and one final response. Sixteen turns regularly
-    # truncates that normal workflow before validation can begin.
-    max_steps: int = 128
+    # This is an explicit safety ceiling rather than the normal target for a
+    # task. The runner still has model, command, and whole-task timeouts, so a
+    # long task can remain resumable without being prematurely labelled failed
+    # merely because it needs many small inspect/edit/verify turns.
+    max_steps: int = 10_000
     max_consecutive_tool_errors: int = 4
     model_retries: int = 3
     # Keep provider calls bounded so a stalled endpoint cannot leave the
@@ -95,11 +96,11 @@ class Settings:
             raise ConfigError("Missing required configuration: " + ", ".join(missing))
 
         try:
-            configured_max_steps = max_steps if max_steps is not None else int(value("SEECODER_MAX_STEPS", "128") or "128")
+            configured_max_steps = max_steps if max_steps is not None else int(value("SEECODER_MAX_STEPS", "10000") or "10000")
         except ValueError as error:
             raise ConfigError("SEECODER_MAX_STEPS must be an integer") from error
-        if not 1 <= configured_max_steps <= 128:
-            raise ConfigError("SEECODER_MAX_STEPS must be between 1 and 128")
+        if not 1 <= configured_max_steps <= 10_000:
+            raise ConfigError("SEECODER_MAX_STEPS must be between 1 and 10000")
 
         try:
             configured_model_timeout = float(value("SEECODER_MODEL_TIMEOUT_S", "120") or "120")
