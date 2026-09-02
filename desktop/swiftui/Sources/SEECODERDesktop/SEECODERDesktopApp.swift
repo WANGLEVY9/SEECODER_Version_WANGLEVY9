@@ -3,32 +3,63 @@ import AppKit
 
 @MainActor
 final class DesktopAppDelegate: NSObject, NSApplicationDelegate {
+  private var window: NSWindow?
+  private(set) var store: DesktopStore?
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
-    // SwiftUI may create the WindowGroup just after the delegate callback.
-    // Schedule activation on the next run-loop turn and retry once if the
-    // window has not been materialized yet.
-    DispatchQueue.main.async { self.activateWindow(retry: true) }
+    // Do not rely on SwiftUI's WindowGroup to materialize the first window.
+    // When this executable is wrapped in a temporary .app bundle and launched
+    // through LaunchServices, WindowGroup can leave the process alive without
+    // creating a visible window. Own the window explicitly instead.
+    let store = DesktopStore()
+    self.store = store
+
+    let rootView = DesktopRoot()
+      .environmentObject(store)
+      .frame(minWidth: 1000, minHeight: 640)
+    let hostingView = NSHostingView(rootView: rootView)
+    hostingView.autoresizingMask = [.width, .height]
+
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1360, height: 860),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+    window.title = "SEECODER"
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    window.minSize = NSSize(width: 1000, height: 640)
+    window.isReleasedWhenClosed = false
+    window.contentView = hostingView
+    window.center()
+    self.window = window
+
+    window.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-    if !flag { activateWindow(retry: false) }
+    if !flag {
+      window?.makeKeyAndOrderFront(nil)
+      NSApp.activate(ignoringOtherApps: true)
+    }
     return true
   }
 
-  func activateWindow(retry: Bool = false) {
+  func openNewConversation() {
+    store?.openNewConversation()
+  }
+
+  func activateWindow() {
     NSApp.activate(ignoringOtherApps: true)
-    if let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey }) ?? NSApp.windows.first(where: { $0.canBecomeKey }) {
-      window.makeKeyAndOrderFront(nil)
-    } else if retry {
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.activateWindow(retry: false) }
-    }
+    window?.makeKeyAndOrderFront(nil)
   }
 }
 
 @main
 struct SEECODERDesktopApp: App {
-  @StateObject private var store = DesktopStore()
   @NSApplicationDelegateAdaptor(DesktopAppDelegate.self) private var appDelegate
 
   init() {
@@ -38,11 +69,11 @@ struct SEECODERDesktopApp: App {
   }
 
   var body: some Scene {
-    WindowGroup("SEECODER") { DesktopRoot().environmentObject(store).frame(minWidth: 1000, minHeight: 640).onAppear { appDelegate.activateWindow() } }
-      .windowStyle(.hiddenTitleBar)
-      .defaultSize(width: 1360, height: 860)
-      .windowResizability(.contentMinSize)
-      .commands { CommandGroup(after: .newItem) { Button("新对话") { store.openNewConversation() }.keyboardShortcut("n", modifiers: .command) } }
+    // The visible window is created by DesktopAppDelegate. Keep a non-window
+    // scene so SwiftUI still owns the application lifecycle without creating a
+    // second (or sometimes zero) main window.
+    Settings { EmptyView() }
+      .commands { CommandGroup(after: .newItem) { Button("新对话") { appDelegate.openNewConversation() }.keyboardShortcut("n", modifiers: .command) } }
   }
 }
 
