@@ -208,6 +208,7 @@ final class DesktopStore: ObservableObject {
     load()
     loadProjectFlags()
     loadSessionFlags()
+    normalizeStoredWorkspaces()
     if let storedMode = UserDefaults.standard.string(forKey: modeKey), ["ask", "plan", "auto"].contains(storedMode) { mode = storedMode }
     cleanupEmptyPlaceholderSessions()
     if selectedID == nil || !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }
@@ -240,8 +241,10 @@ final class DesktopStore: ObservableObject {
   func persistMode() { guard ["ask", "plan", "auto"].contains(mode) else { mode = "auto"; return }; UserDefaults.standard.set(mode, forKey: modeKey) }
   func openNewConversation() { guard !isRunning else { return }; showNewConversation = true }
   func startSession(in workspace: String) {
-    let session = SessionModel(workspace: workspace)
-    sessions.insert(session, at: 0); selectedID = session.id; showNewConversation = false; reviewFile = nil; diffLines = []; resetWorkUpdates(); activity.insert("已在项目中创建新对话 · \(shortPath(workspace))", at: 0); save()
+    let resolved = resolveWorkspace(workspace)
+    let session = SessionModel(workspace: resolved.path)
+    sessions.insert(session, at: 0); selectedID = session.id; showNewConversation = false; reviewFile = nil; diffLines = []; resetWorkUpdates(); activity.insert("已在项目中创建新对话 · \(shortPath(resolved.path))", at: 0); save()
+    if let correction = resolved.correction { activity.insert(correction, at: 0); save() }
   }
   func select(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; reviewFile = nil; diffLines = []; resetWorkUpdates(); save() }
   func chooseWorkspace() {
@@ -319,7 +322,15 @@ final class DesktopStore: ObservableObject {
     do { try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false); showCreateWorkspace = false; startSession(in: target.path); activity.insert("已创建新项目 · \(name)", at: 0) }
     catch { workspaceError = "无法创建该文件夹。请确认名称未被占用且目录可写。" }
   }
-  func applyWorkspace(_ path: String, activityText: String) { guard let index = currentIndex else { return }; if sessions[index].workspace != path { sessions[index].localChanges = [] }; sessions[index].workspace = path; sessions[index].updatedAt = .now; activity.insert(activityText + " · " + shortPath(path), at: 0); reviewFile = nil; diffLines = []; save() }
+  func applyWorkspace(_ path: String, activityText: String) {
+    guard let index = currentIndex else { return }
+    let resolved = resolveWorkspace(path)
+    if sessions[index].workspace != resolved.path { sessions[index].localChanges = [] }
+    sessions[index].workspace = resolved.path; sessions[index].updatedAt = .now
+    activity.insert(activityText + " · " + shortPath(resolved.path), at: 0)
+    if let correction = resolved.correction { activity.insert(correction, at: 0) }
+    reviewFile = nil; diffLines = []; save()
+  }
   func openCreateWorkspace() { workspaceParent = ""; workspaceName = "新项目"; workspaceError = ""; showCreateWorkspace = true }
   func openRenameSession(_ session: SessionModel) { guard !isRunning else { return }; selectedID = session.id; renameText = session.title; renameError = ""; renameKind = .session }
   func openRenameCurrentWorkspace() { guard let session = current else { return }; openRenameWorkspace(session) }
@@ -338,7 +349,22 @@ final class DesktopStore: ObservableObject {
     catch { renameError = "无法重命名该文件夹。请确认其未被占用且父目录可写。" }
   }
   func send() {
-    let task = draft.trimmingCharacters(in: .whitespacesAndNewlines); guard !task.isEmpty, hasWorkspace, !isRunning, let index = currentIndex else { return }
+    let task = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !task.isEmpty, !isRunning, let index = currentIndex else { return }
+    let resolved = resolveWorkspace(sessions[index].workspace)
+    if sessions[index].workspace != resolved.path {
+      sessions[index].localChanges = []
+      sessions[index].workspace = resolved.path
+      sessions[index].updatedAt = .now
+      if let correction = resolved.correction { activity.insert(correction, at: 0) }
+      save()
+    }
+    let workspace = sessions[index].workspace
+    guard !workspace.isEmpty else {
+      append(.system, "请先选择一个本地工作区，再提交任务。")
+      addTimeline("无法提交任务", detail: "尚未选择本地工作区", tone: .failure)
+      return
+    }
     // Protect the long-lived stdin protocol from a double click or a
     // keyboard shortcut delivered immediately after the click. A later,
     // intentional retry remains available once this short window expires.
@@ -349,7 +375,7 @@ final class DesktopStore: ObservableObject {
       do { try inputPipe.fileHandleForWriting.write(contentsOf: Data((task + "\n").utf8)); return }
       catch { self.process = nil; self.inputPipe = nil }
     }
-    let sessionID = sessions[index].id.uuidString; let workspace = sessions[index].workspace; let storage = sessionStorageURL(id: sessionID).path
+    let sessionID = sessions[index].id.uuidString; let storage = sessionStorageURL(id: sessionID).path
     let root = projectRootURL()
     let envFile = root.appendingPathComponent(".env")
     guard let invocation = agentInvocation(root: root, workspace: workspace, storage: storage, sessionID: sessionID) else {
@@ -676,6 +702,42 @@ final class DesktopStore: ObservableObject {
       }
     }
     return URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+  }
+  private func resolveWorkspace(_ rawPath: String) -> (path: String, correction: String?) {
+    guard !rawPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return ("", nil) }
+    let url = URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL
+    guard FileManager.default.fileExists(atPath: url.path),
+          let entries = try? FileManager.default.contentsOfDirectory(atPath: url.path) else {
+      return (url.path, nil)
+    }
+    let meaningfulEntries = entries.filter { ![".DS_Store", ".localized"].contains($0) }
+    guard meaningfulEntries.isEmpty else { return (url.path, nil) }
+
+    // A common setup mistake is selecting <repo>/<repo> after creating a
+    // folder with the same name as the checkout. Treat that exact shape as a
+    // recoverable path error, while keeping genuinely empty folders valid for
+    // new-project scaffolding.
+    let parent = url.deletingLastPathComponent()
+    let projectMarkers = ["pyproject.toml", "package.json", "Package.swift", "Cargo.toml", ".git", "src", "desktop"]
+    let sameName = url.lastPathComponent == parent.lastPathComponent
+    let parentLooksLikeProject = projectMarkers.contains { marker in
+      FileManager.default.fileExists(atPath: parent.appendingPathComponent(marker).path)
+    }
+    guard sameName, parentLooksLikeProject else { return (url.path, nil) }
+    return (parent.path, "检测到空的重复工作区目录，已自动切换到项目根目录 · \(parent.lastPathComponent)")
+  }
+  private func normalizeStoredWorkspaces() {
+    var changed = false
+    for index in sessions.indices {
+      let resolved = resolveWorkspace(sessions[index].workspace)
+      guard resolved.path != sessions[index].workspace else { continue }
+      sessions[index].workspace = resolved.path
+      sessions[index].localChanges = []
+      sessions[index].updatedAt = .now
+      if let correction = resolved.correction { activity.insert(correction, at: 0) }
+      changed = true
+    }
+    if changed { activity.insert("已校验已保存的本地工作区路径", at: 0) }
   }
   private func classifyDiff(_ text: String) -> DiffLine { let kind: DiffLine.Kind = text.hasPrefix("@@") ? .hunk : text.hasPrefix("+++ ") || text.hasPrefix("--- ") ? .file : text.hasPrefix("+") ? .add : text.hasPrefix("-") ? .remove : text.hasPrefix("diff ") || text.hasPrefix("index ") ? .meta : .context; return DiffLine(kind: kind, text: text) }
   private func shortPath(_ path: String) -> String { URL(fileURLWithPath: path).lastPathComponent }
