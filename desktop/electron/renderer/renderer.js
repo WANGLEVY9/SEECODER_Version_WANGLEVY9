@@ -574,7 +574,8 @@ function handleRunnerEvent(payload) {
     return;
   }
   const summaries = {
-    chat_started: ['本地会话已连接', data?.workspace], run_started: ['任务已启动', data?.workspace],
+    chat_started: ['本地会话已连接', data?.workspace],
+    run_started: ['任务已启动', '最大步数：' + (data?.max_steps ?? '-') + ' · 整轮时限：' + (Number(data?.task_timeout_s) === 21600 ? '6 小时' : ((data?.task_timeout_s ?? '-') + ' 秒'))],
     plan_proposal: ['计划动作：' + toolLabel(data?.name), data?.description || data?.name || '', 'ok'],
     configuration_error: ['配置错误', data?.message || '', 'error'], runner_error: ['本地进程错误', data?.message || '', 'error'], chat_exit: ['本地会话已退出', 'code=' + (data?.code ?? 'null')],
   };

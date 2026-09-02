@@ -9,6 +9,24 @@ from seecoder.config import ConfigError, Settings, load_env_file
 
 
 class ConfigTests(unittest.TestCase):
+    def test_default_task_timeout_allows_six_hours_for_long_running_tasks(self) -> None:
+        self.assertEqual(Settings(api_key="test-key", model="test-model").task_timeout_s, 21_600.0)
+
+    def test_task_timeout_accepts_six_hours_and_rejects_larger_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / ".env"
+            path.write_text(
+                "SEECODER_API_KEY=file-key\nSEECODER_MODEL=file-model\nSEECODER_TASK_TIMEOUT_S=21600\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(Settings.from_environment(env_file=path).task_timeout_s, 21_600.0)
+            path.write_text(
+                "SEECODER_API_KEY=file-key\nSEECODER_MODEL=file-model\nSEECODER_TASK_TIMEOUT_S=21601\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "between 10 and 21600"):
+                Settings.from_environment(env_file=path)
+
     def test_default_step_budget_allows_long_resumable_tasks(self) -> None:
         self.assertEqual(Settings(api_key="test-key", model="test-model").max_steps, 10_000)
 

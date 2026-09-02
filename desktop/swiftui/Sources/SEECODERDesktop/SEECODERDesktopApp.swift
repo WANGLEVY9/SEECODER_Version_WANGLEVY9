@@ -418,7 +418,9 @@ final class DesktopStore: ObservableObject {
     case "reasoning": break
     case "run_started":
       if let startedMode = data["mode"] as? String, ["ask", "plan", "auto"].contains(startedMode) { mode = startedMode }
-      addTimeline("本地 AgentRunner 已启动", detail: "模式：\(data["mode"] as? String ?? mode)，最大步数：\(data["max_steps"] ?? "-")", tone: .running)
+      let timeout = (data["task_timeout_s"] as? NSNumber)?.doubleValue
+      let timeoutText = timeout == 21_600 ? "6 小时" : (timeout.map { "\(Int($0)) 秒" } ?? "-")
+      addTimeline("本地 AgentRunner 已启动", detail: "模式：\(data["mode"] as? String ?? mode)，最大步数：\(data["max_steps"] ?? "-")，整轮时限：\(timeoutText)", tone: .running)
     case "model_request": break
     case "tool_dispatch":
       let calls = data["calls"] as? [[String: Any]] ?? []
@@ -976,11 +978,12 @@ struct Composer: View {
 }
 
 private enum InspectorPage: String, CaseIterable, Identifiable {
-    case status, tools, skills
+    case status, review, tools, skills
     var id: String { rawValue }
     var label: String {
         switch self {
         case .status: "运行"
+        case .review: "变更"
         case .tools: "工具 / MCP"
         case .skills: "Skills"
         }
@@ -994,10 +997,9 @@ struct Inspector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(store.reviewFile == nil ? page.label : "审阅变更")
-                    .font(.title3.bold())
+                Text(page.label).font(.title3.bold())
                 Spacer()
-                if store.reviewFile != nil {
+                if page == .review, store.reviewFile != nil {
                     Button { store.reviewFile = nil } label: { Image(systemName: "xmark") }
                         .buttonStyle(.plain)
                         .foregroundStyle(Color.muted)
@@ -1010,38 +1012,89 @@ struct Inspector: View {
                     .foregroundStyle(Color.muted)
             }
 
-            if let file = store.reviewFile {
-                Text(file).font(.caption.monospaced()).foregroundStyle(Color.muted)
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(store.diffLines) { line in
-                            Text(line.text.isEmpty ? " " : line.text)
-                                .font(.system(.caption, design: .monospaced))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(diffColor(line.kind))
-                        }
-                    }
-                }
-                .background(.white, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.line, lineWidth: 1))
-            } else {
-                Picker("检查器页面", selection: $page) {
-                    ForEach(InspectorPage.allCases) { item in Text(item.label).tag(item) }
-                }
-                .pickerStyle(.segmented)
+            Picker("检查器页面", selection: $page) {
+                ForEach(InspectorPage.allCases) { item in Text(item.label).tag(item) }
+            }
+            .pickerStyle(.segmented)
 
-                switch page {
-                case .status: StatusInspector()
-                case .tools: ToolManagerPanel()
-                case .skills: SkillsManagerPanel()
-                }
+            switch page {
+            case .status: StatusInspector()
+            case .review: ChangeReviewInspector()
+            case .tools: ToolManagerPanel()
+            case .skills: SkillsManagerPanel()
             }
         }
         .padding(20)
         .frame(alignment: .topLeading)
         .background(Color.inspector)
+        .onChange(of: store.reviewFile) { _, file in if file != nil { page = .review } }
+    }
+}
+
+private struct ChangeReviewInspector: View {
+    @EnvironmentObject var store: DesktopStore
+
+    var body: some View {
+        let files = store.changedFiles()
+        let additions = files.reduce(0) { $0 + $1.1 }
+        let deletions = files.reduce(0) { $0 + $1.2 }
+        VStack(alignment: .leading, spacing: 10) {
+            Text("本轮编辑记录与本地差异。选择文件即可在此只读审阅；Git 工作区读取真实 diff，非 Git 工作区保留 Agent 的文件记录。")
+                .font(.caption).foregroundStyle(Color.muted).lineSpacing(3)
+            HStack {
+                Label("\(files.count) 个文件", systemImage: "doc.text.magnifyingglass")
+                Spacer()
+                Text("+\(additions) −\(deletions)").font(.caption.monospaced())
+                    .foregroundStyle(Color.muted)
+            }
+            .font(.caption.weight(.semibold)).foregroundStyle(Color.ink)
+            if files.isEmpty {
+                Spacer()
+                ContentUnavailableView("暂无可审阅的变更", systemImage: "doc.badge.gearshape", description: Text("完成写入、补丁、复制、移动或删除操作后，文件记录和 diff 会显示在这里。"))
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(files, id: \.0) { file in
+                            Button { store.inspectDiff(file.0) } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: store.reviewFile == file.0 ? "doc.text.fill" : "doc.text")
+                                        .foregroundStyle(store.reviewFile == file.0 ? Color.brandBlue : Color.muted)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(file.0).font(.system(size: 11, design: .monospaced)).lineLimit(1)
+                                        Text(store.reviewFile == file.0 ? "正在查看差异" : "点击查看 diff").font(.caption2).foregroundStyle(Color.muted)
+                                    }
+                                    Spacer()
+                                    Text("+\(file.1) −\(file.2)").font(.caption2.monospaced()).foregroundStyle(Color.muted)
+                                }
+                                .padding(8).background(store.reviewFile == file.0 ? Color.brandBlue.opacity(0.10) : Color.white, in: RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 180)
+                .padding(4).background(Color.white, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.line, lineWidth: 1))
+                if let file = store.reviewFile {
+                    Text(file).font(.caption.monospaced()).foregroundStyle(Color.muted).lineLimit(1)
+                    ScrollView([.horizontal, .vertical]) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(store.diffLines) { line in
+                                Text(line.text.isEmpty ? " " : line.text)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 8).padding(.vertical, 2)
+                                    .background(diffColor(line.kind))
+                            }
+                        }
+                    }
+                    .frame(maxHeight: .infinity)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.line, lineWidth: 1))
+                }
+            }
+        }
     }
 }
 
