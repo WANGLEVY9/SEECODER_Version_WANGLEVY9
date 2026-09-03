@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#11100f" />
     <meta
       name="description"
-      content="SEECODER 的工程架构、运行闭环、验证证据与开发路线图。"
+      content="SEECODER 的工程架构、核心逻辑实现、运行闭环、验证证据与开发路线图。"
     />
     <title>SEECODER / Engineering Map</title>
     <link rel="stylesheet" href="./styles.css" />
@@ -44,26 +44,29 @@
           <a class="nav-item" href="#modules" data-section="modules">
             <span class="nav-no">03</span><span>核心模块与职责</span><span class="nav-state">●</span>
           </a>
+          <a class="nav-item" href="#logic" data-section="logic">
+            <span class="nav-no">04</span><span>核心逻辑实现</span><span class="nav-state">●</span>
+          </a>
 
           <div class="nav-label nav-label-spaced">TRUST &amp; EVIDENCE</div>
           <a class="nav-item" href="#evidence" data-section="evidence">
-            <span class="nav-no">04</span><span>验证证据</span><span class="nav-state">●</span>
+            <span class="nav-no">05</span><span>验证证据</span><span class="nav-state">●</span>
           </a>
           <a class="nav-item" href="#guardrails" data-section="guardrails">
-            <span class="nav-no">05</span><span>安全边界</span><span class="nav-state">●</span>
+            <span class="nav-no">06</span><span>安全边界</span><span class="nav-state">●</span>
           </a>
           <a class="nav-item" href="#roadmap" data-section="roadmap">
-            <span class="nav-no">06</span><span>开发路线</span><span class="nav-state">→</span>
+            <span class="nav-no">07</span><span>开发路线</span><span class="nav-state">→</span>
           </a>
 
           <div class="nav-label nav-label-spaced">SOURCE MAP</div>
           <a class="nav-item" href="#source-map" data-section="source-map">
-            <span class="nav-no">07</span><span>源码入口</span><span class="nav-state">↗</span>
+            <span class="nav-no">08</span><span>源码入口</span><span class="nav-state">↗</span>
           </a>
         </nav>
 
         <div class="sidebar-footer">
-          <div class="progress-meta"><span>PROJECT READINESS</span><strong>06 / 07</strong></div>
+          <div class="progress-meta"><span>PROJECT READINESS</span><strong>07 / 08</strong></div>
           <div class="progress-track"><span></span></div>
           <p>一张跟着代码更新的工程地图。事实、边界和计划分开呈现。</p>
           <button class="theme-toggle" id="themeToggle" type="button">切换浅色阅读</button>
@@ -140,16 +143,58 @@
           <div class="module-grid">
             <article class="module-card module-wide"><div class="module-top"><span class="module-id">CORE / 01</span><span class="module-status done">IMPLEMENTED</span></div><code>runner.py</code><h3>AgentRunner · 状态机主循环</h3><p>串起模型请求、工具分发、只读并行、变更串行、审批、流式事件和停止条件。</p><div class="module-foot"><span>FINAL</span><span>STOP_MAX_STEPS</span><span>CANCELLED</span></div></article>
             <article class="module-card"><div class="module-top"><span class="module-id">ADAPTER / 02</span><span class="module-status done">IMPLEMENTED</span></div><code>model_client.py</code><h3>协议适配</h3><p>解析 tool_calls、reasoning_content、stream delta 与 usage；保留 provider 解耦。</p><div class="file-link">OpenAI-compatible ↗</div></article>
-            <article class="module-card"><div class="module-top"><span class="module-id">STATE / 03</span><span class="module-status done">IMPLEMENTED</span></div><code>session.py</code><h3>会话与快照</h3><p>Conversation 持久化消息、模式、usage、步数和未完成审批，快照 v2 可恢复。</p><div class="file-link">SNAPSHOT_VERSION = 2</div></article>
+            <article class="module-card"><div class="module-top"><span class="module-id">STATE / 03</span><span class="module-status done">IMPLEMENTED</span></div><code>session.py</code><h3>会话与快照</h3><p>Conversation 持久化消息、模式、usage、步数和未完成审批，快照 v3 可恢复。</p><div class="file-link">SNAPSHOT_VERSION = 3</div></article>
             <article class="module-card module-accent"><div class="module-top"><span class="module-id">BOUNDARY / 04</span><span class="module-status done">IMPLEMENTED</span></div><code>tools/</code><h3>本地能力层</h3><p>工具 schema、JSON 校验、工作区边界和结构化错误都在项目内实现。</p><div class="tool-pills"><span>files</span><span>git</span><span>shell</span><span>search</span><span>subagent</span></div></article>
             <article class="module-card"><div class="module-top"><span class="module-id">OBSERVE / 05</span><span class="module-status done">IMPLEMENTED</span></div><code>trace.py</code><h3>可观测性</h3><p>append-only JSONL trace，敏感 key 和已知 secret 值双重脱敏。</p><div class="file-link">AUDITABLE BY DEFAULT</div></article>
             <article class="module-card module-wide"><div class="module-top"><span class="module-id">SURFACE / 06</span><span class="module-status done">IMPLEMENTED</span></div><code>desktop/swiftui/</code><h3>原生展示层</h3><p>SwiftUI 连接持续运行的本地 chat 进程，展示会话、流式消息、工具轨迹、审批、环境和 diff 审阅。Electron 是兼容展示层。</p><div class="surface-line"><span>Renderer</span><b>→</b><span>JSONL v3</span><b>→</b><span>AgentRunner</span></div></article>
           </div>
         </section>
 
+        <section class="section logic-section" id="logic" data-observe="logic">
+          <div class="section-heading">
+            <div><span class="section-index">04 / CORE LOGIC</span><h2>关键逻辑不是黑盒。<br /><em>每一步都有责任人。</em></h2></div>
+            <p>下面按一次任务的真实执行顺序，解释核心逻辑如何由本项目自行编写并连接起来。</p>
+          </div>
+          <div class="logic-flow" aria-label="核心逻辑执行链">
+            <span>MESSAGE HISTORY</span><b>→</b><span>CONTEXT BUDGET</span><b>→</b><span>MODEL RESPONSE</span><b>→</b><span>TOOL POLICY</span><b>→</b><span>LOCAL RESULT</span><b>↺</b>
+          </div>
+          <div class="logic-grid">
+            <article class="logic-card logic-card-wide">
+              <div class="logic-card-top"><span class="logic-no">01 / STATE</span><span class="module-status done">IMPLEMENTED</span></div>
+              <code>session.py · context.py</code><h3>对话历史与上下文管理</h3>
+              <p>Conversation 维护一条 provider-neutral 的消息列表。每次 send 都追加 user 消息，Runner 再追加 assistant 的文本或 tool call，以及对应的 tool result；因此下一轮看到的是完整因果链，而不是一段拼接后的摘要。保存时写入版本、模式、workspace、usage、步数、TaskPlan 和 pending approval，并先写临时文件、fsync 后原子替换。ContextManager 估算字符预算，固定保留 system 与当前任务，从最近回合向前选择完整 turn；工具调用和结果不会被拆开。普通模式可压缩旧历史，thinking 模式在无法完整保留时直接报告预算错误。</p>
+              <div class="logic-detail"><span>INPUT</span><b>messages[] + budget</b><span>OUTPUT</span><b>safe provider context</b></div>
+            </article>
+            <article class="logic-card">
+              <div class="logic-card-top"><span class="logic-no">02 / CONTRACT</span><span class="module-status done">IMPLEMENTED</span></div>
+              <code>tools/base.py · approval.py</code><h3>工具定义与本地执行</h3>
+              <p>每个工具声明 name、description、JSON Schema 和 capability。ToolRegistry 先检查工具是否存在，再解析 JSON、校验 required/type/range，最后调用 execute。只读工具可并行，变更工具串行执行；Ask、Plan、Auto 由 Policy 决定批准、提案或执行。</p>
+              <div class="logic-detail"><span>MODEL</span><b>schema tool_call</b><span>PROGRAM</span><b>validated ToolResult</b></div>
+            </article>
+            <article class="logic-card">
+              <div class="logic-card-top"><span class="logic-no">03 / ADAPTER</span><span class="module-status done">IMPLEMENTED</span></div>
+              <code>model_client.py</code><h3>模型输出解析</h3>
+              <p>ModelClient 把本地消息转换成 OpenAI-compatible 请求。流式响应分别接收 content、reasoning 和 tool-call delta，并按 index 累积工具名称及 arguments，收到 done 后组装统一 ModelResponse。流式已经输出后不重放，避免 UI 重复；尚未输出时才进行有限重试。</p>
+              <div class="logic-detail"><span>STREAM</span><b>delta → assembled</b><span>ERROR</span><b>partial_text</b></div>
+            </article>
+            <article class="logic-card">
+              <div class="logic-card-top"><span class="logic-no">04 / CONTROL</span><span class="module-status done">IMPLEMENTED</span></div>
+              <code>runner.py</code><h3>循环与终止条件</h3>
+              <p>Runner 每轮先检查 CancellationToken、整轮 deadline 和上下文预算，再请求模型。无 tool call 即写入 final；否则分发工具并把结果追加回消息，继续下一轮。max steps、6 小时 task timeout、连续或重复工具错误、context budget、model/protocol failure 和 Ctrl+C 都映射为明确 RunState。</p>
+              <div class="logic-detail"><span>CONTINUE</span><b>tool result</b><span>TERMINAL</span><b>RunState</b></div>
+            </article>
+            <article class="logic-card logic-card-wide">
+              <div class="logic-card-top"><span class="logic-no">05 / RECOVERY</span><span class="module-status done">IMPLEMENTED</span></div>
+              <code>changesets.py · trace.py · cli.py</code><h3>错误处理、事件与证据</h3>
+              <p>工具异常不会直接击穿主循环，而是归一化为带 kind/message/data 的 ToolResult，交给模型决定修正路径；同一失败调用重复出现或连续错误达到阈值时才停止。每轮事件以 JSONL 输出，带 session_id、run_id、sequence，桌面端据此更新运行面板。ChangeSet 在变更前保存基线、变更后保存 SHA-256，TraceWriter 追加脱敏审计记录；因此失败后仍能恢复会话、继续任务或在未发生冲突时回滚。</p>
+              <div class="logic-detail"><span>OBSERVE</span><b>events + trace</b><span>RECOVER</span><b>resume / rollback</b></div>
+            </article>
+          </div>
+        </section>
+
         <section class="section evidence-section" id="evidence" data-observe="evidence">
           <div class="section-heading">
-            <div><span class="section-index">04 / EVIDENCE</span><h2>能运行，不等于已证明。<br /><em>这里放证据。</em></h2></div>
+            <div><span class="section-index">05 / EVIDENCE</span><h2>能运行，不等于已证明。<br /><em>这里放证据。</em></h2></div>
             <p>页面只把仓库和验证记录里能复核的内容标成已完成；真实模型、网络搜索和宿主命令仍受本机配置影响。</p>
           </div>
           <div class="evidence-board">
@@ -172,7 +217,7 @@
 
         <section class="section guardrails-section" id="guardrails" data-observe="guardrails">
           <div class="section-heading compact-heading">
-            <div><span class="section-index">05 / BOUNDARIES</span><h2>把风险写进结构，而不是写进愿望。</h2></div>
+            <div><span class="section-index">06 / BOUNDARIES</span><h2>把风险写进结构，而不是写进愿望。</h2></div>
             <p>这些限制不是营销词。它们是工具层、策略层和运行时的实际约束。</p>
           </div>
           <div class="guardrail-grid">
@@ -186,7 +231,7 @@
 
         <section class="section roadmap-section" id="roadmap" data-observe="roadmap">
           <div class="section-heading">
-            <div><span class="section-index">06 / ROADMAP</span><h2>已完成的能力，<br /><em>与下一轮问题。</em></h2></div>
+            <div><span class="section-index">07 / ROADMAP</span><h2>已完成的能力，<br /><em>与下一轮问题。</em></h2></div>
             <p>路线图只承认当前代码已经实现和文档已经记录的状态，不把愿望写成结果。</p>
           </div>
           <div class="roadmap-list">
@@ -200,7 +245,7 @@
 
         <section class="section source-section" id="source-map" data-observe="source-map">
           <div class="source-panel">
-            <div class="source-copy"><span class="section-index">07 / SOURCE MAP</span><h2>从这里继续读代码。</h2><p>先读主循环，再读工具边界，最后读桌面事件。页面是导航，不替代源码和测试。</p><a class="button button-primary" href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9" target="_blank" rel="noreferrer">打开 GitHub 仓库 ↗</a></div>
+            <div class="source-copy"><span class="section-index">08 / SOURCE MAP</span><h2>从这里继续读代码。</h2><p>先读主循环，再读工具边界，最后读桌面事件。页面是导航，不替代源码和测试。</p><a class="button button-primary" href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9" target="_blank" rel="noreferrer">打开 GitHub 仓库 ↗</a></div>
             <div class="source-tree" aria-label="源码目录树"><div><span>SEECODER/</span></div><div class="tree-indent"><span class="tree-folder">src/seecoder/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/runner.py" target="_blank" rel="noreferrer">└─ runner.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/model_client.py" target="_blank" rel="noreferrer">└─ model_client.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/src/seecoder/tools" target="_blank" rel="noreferrer">└─ tools/</a></div><div class="tree-indent"><span class="tree-folder">desktop/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/desktop/swiftui" target="_blank" rel="noreferrer">└─ swiftui/</a></div><div class="tree-indent"><span class="tree-folder">tests/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/docs" target="_blank" rel="noreferrer">└─ docs/</a></div></div>
           </div>
           <div class="footer-line"><span>SEECODER / LOCAL-FIRST / AUDITABLE</span><span>LAST MAP PASS · 2026.09.01</span></div>
@@ -220,7 +265,7 @@
           <div class="inspector-block"><span class="tiny-label">STATE MODEL</span><div class="state-stack"><span class="state-chip amber">AWAITING_APPROVAL</span><span class="state-chip cyan">MODEL_REQUEST</span><span class="state-chip green">FINAL</span><span class="state-chip ink">CANCELLED</span></div></div>
           <div class="inspector-block"><span class="tiny-label">CAPABILITY MIX</span><div class="mini-chart"><div><span>Runtime</span><i style="--h:90%"></i><b>90</b></div><div><span>Evidence</span><i style="--h:78%"></i><b>78</b></div><div><span>Surface</span><i style="--h:64%"></i><b>64</b></div><div><span>Isolation</span><i style="--h:38%"></i><b>38</b></div></div></div>
           <div class="inspector-quote">“不要把代码存在，误写成效果已经证明。”<span>— project rule</span></div>
-          <div class="inspector-toc"><span class="tiny-label">ON THIS PAGE</span><a href="#overview">系统总览</a><a href="#loop">一次任务怎样流动</a><a href="#modules">核心模块与职责</a><a href="#evidence">验证证据</a><a href="#guardrails">安全边界</a><a href="#roadmap">开发路线</a></div>
+          <div class="inspector-toc"><span class="tiny-label">ON THIS PAGE</span><a href="#overview">系统总览</a><a href="#loop">一次任务怎样流动</a><a href="#modules">核心模块与职责</a><a href="#logic">核心逻辑实现</a><a href="#evidence">验证证据</a><a href="#guardrails">安全边界</a><a href="#roadmap">开发路线</a></div>
         </div>
       </aside>
     </div>
