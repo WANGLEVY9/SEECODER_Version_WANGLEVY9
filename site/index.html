@@ -3,276 +3,159 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#11100f" />
-    <meta
-      name="description"
-      content="SEECODER 的工程架构、核心逻辑实现、运行闭环、验证证据与开发路线图。"
-    />
-    <title>SEECODER / Engineering Map</title>
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="description" content="SEECODER 编程 Agent 的架构、状态机、上下文、工具执行、模型解析和可恢复运行说明。" />
+    <title>SEECODER / Coding Agent Architecture</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="ambient ambient-a" aria-hidden="true"></div>
     <div class="ambient ambient-b" aria-hidden="true"></div>
-
     <div class="app-shell">
       <aside class="sidebar" id="sidebar">
         <div class="brand-lockup">
           <img class="brand-image" src="./assets/seecoder-logo.png" alt="SEECODER" />
-          <div>
-            <div class="brand-name">SEECODER</div>
-            <div class="brand-sub">engineering map</div>
-          </div>
+          <div><div class="brand-name">SEECODER</div><div class="brand-sub">coding agent / architecture</div></div>
         </div>
-
         <div class="sidebar-rule"></div>
-
-        <button class="search-trigger" id="searchTrigger" type="button">
-          <span class="search-icon">⌕</span>
-          <span>搜索模块或能力</span>
-          <kbd>⌘ K</kbd>
-        </button>
-
+        <button class="search-trigger" id="searchTrigger" type="button"><span class="search-icon">⌕</span><span>搜索模块或能力</span><kbd>⌘ K</kbd></button>
         <nav class="chapter-nav" aria-label="页面章节">
-          <div class="nav-label">READ THE SYSTEM</div>
-          <a class="nav-item active" href="#overview" data-section="overview">
-            <span class="nav-no">01</span><span>系统总览</span><span class="nav-state">●</span>
-          </a>
-          <a class="nav-item" href="#loop" data-section="loop">
-            <span class="nav-no">02</span><span>一次任务怎样流动</span><span class="nav-state">●</span>
-          </a>
-          <a class="nav-item" href="#modules" data-section="modules">
-            <span class="nav-no">03</span><span>核心模块与职责</span><span class="nav-state">●</span>
-          </a>
-          <a class="nav-item" href="#logic" data-section="logic">
-            <span class="nav-no">04</span><span>核心逻辑实现</span><span class="nav-state">●</span>
-          </a>
-
-          <div class="nav-label nav-label-spaced">TRUST &amp; EVIDENCE</div>
-          <a class="nav-item" href="#evidence" data-section="evidence">
-            <span class="nav-no">05</span><span>验证证据</span><span class="nav-state">●</span>
-          </a>
-          <a class="nav-item" href="#guardrails" data-section="guardrails">
-            <span class="nav-no">06</span><span>安全边界</span><span class="nav-state">●</span>
-          </a>
-          <a class="nav-item" href="#roadmap" data-section="roadmap">
-            <span class="nav-no">07</span><span>开发路线</span><span class="nav-state">→</span>
-          </a>
-
+          <div class="nav-label">SYSTEM MAP</div>
+          <a class="nav-item active" href="#overview" data-section="overview"><span class="nav-no">01</span><span>系统总览</span><span class="nav-state">●</span></a>
+          <a class="nav-item" href="#architecture" data-section="architecture"><span class="nav-no">02</span><span>分层架构</span><span class="nav-state">●</span></a>
+          <a class="nav-item" href="#lifecycle" data-section="lifecycle"><span class="nav-no">03</span><span>任务生命周期</span><span class="nav-state">●</span></a>
+          <a class="nav-item" href="#context" data-section="context"><span class="nav-no">04</span><span>历史与上下文</span><span class="nav-state">●</span></a>
+          <a class="nav-item" href="#tools" data-section="tools"><span class="nav-no">05</span><span>工具契约与执行</span><span class="nav-state">●</span></a>
+          <a class="nav-item" href="#model" data-section="model"><span class="nav-no">06</span><span>模型输出解析</span><span class="nav-state">●</span></a>
+          <a class="nav-item" href="#control" data-section="control"><span class="nav-no">07</span><span>循环与终止</span><span class="nav-state">●</span></a>
+          <a class="nav-item" href="#recovery" data-section="recovery"><span class="nav-no">08</span><span>错误与恢复</span><span class="nav-state">●</span></a>
+          <div class="nav-label nav-label-spaced">TRUST &amp; DELIVERY</div>
+          <a class="nav-item" href="#events" data-section="events"><span class="nav-no">09</span><span>事件与桌面展示</span><span class="nav-state">●</span></a>
+          <a class="nav-item" href="#evidence" data-section="evidence"><span class="nav-no">10</span><span>验证证据</span><span class="nav-state">●</span></a>
+          <a class="nav-item" href="#guardrails" data-section="guardrails"><span class="nav-no">11</span><span>安全边界</span><span class="nav-state">●</span></a>
           <div class="nav-label nav-label-spaced">SOURCE MAP</div>
-          <a class="nav-item" href="#source-map" data-section="source-map">
-            <span class="nav-no">08</span><span>源码入口</span><span class="nav-state">↗</span>
-          </a>
+          <a class="nav-item" href="#source-map" data-section="source-map"><span class="nav-no">12</span><span>源码入口</span><span class="nav-state">↗</span></a>
         </nav>
-
         <div class="sidebar-footer">
-          <div class="progress-meta"><span>PROJECT READINESS</span><strong>07 / 08</strong></div>
+          <div class="progress-meta"><span>DOCUMENTED SURFACE</span><strong>12 / 12</strong></div>
           <div class="progress-track"><span></span></div>
-          <p>一张跟着代码更新的工程地图。事实、边界和计划分开呈现。</p>
+          <p>把“模型说了什么”和“程序做了什么”分开记录。每个结论都能回到源码或测试。</p>
           <button class="theme-toggle" id="themeToggle" type="button">切换浅色阅读</button>
         </div>
       </aside>
 
       <main class="main-content" id="mainContent">
-        <header class="topbar">
-          <div class="breadcrumb"><span>SEECODER</span><b>/</b><strong>ENGINEERING MAP</strong></div>
-          <div class="topbar-actions">
-            <span class="live-dot"><i></i> SOURCE-ALIGNED</span>
-            <a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9" target="_blank" rel="noreferrer">OPEN REPOSITORY ↗</a>
-          </div>
-        </header>
-
-        <div class="mobile-toolbar">
-          <button id="mobileMenu" type="button" aria-label="打开章节导航">☰ <span>章节</span></button>
-          <span>SEECODER / MAP</span>
-          <button id="mobileSearch" type="button" aria-label="搜索页面">⌕</button>
-        </div>
+        <header class="topbar"><div class="breadcrumb"><span>SEECODER</span><b>/</b><strong>CODING AGENT ARCHITECTURE</strong></div><div class="topbar-actions"><span class="live-dot"><i></i> SOURCE-ALIGNED</span><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9" target="_blank" rel="noreferrer">OPEN REPOSITORY ↗</a></div></header>
+        <div class="mobile-toolbar"><button id="mobileMenu" type="button" aria-label="打开章节导航">☰ <span>章节</span></button><span>SEECODER / MAP</span><button id="mobileSearch" type="button" aria-label="搜索页面">⌕</button></div>
 
         <section class="section hero-section" id="overview" data-observe="overview">
-          <div class="hero-kicker"><span>LOCAL-FIRST CODING AGENT</span><span>BUILD 0.1 / 2026.09.01</span></div>
-          <h1>看见每一轮<br /><em>真实发生了什么</em></h1>
-          <p class="hero-lede">
-            SEECODER 把模型的下一步建议，变成一条可检查的本地执行链：<strong>理解 → 校验 → 执行 → 回填 → 继续或停止</strong>。
-            这张地图用于快速理解当前项目已经做到哪里，以及哪些能力仍然只是下一站。
-          </p>
-          <div class="hero-actions">
-            <a class="button button-primary" href="#loop">追踪一次任务 <span>↓</span></a>
-            <a class="button button-quiet" href="#evidence">查看验证证据 <span>↗</span></a>
-          </div>
-
-          <div class="stat-strip" aria-label="项目统计">
-            <div class="stat-cell"><span class="stat-value">25</span><span class="stat-label">Python modules</span></div>
-            <div class="stat-cell"><span class="stat-value">21</span><span class="stat-label">local tools</span></div>
-            <div class="stat-cell"><span class="stat-value">101/101</span><span class="stat-label">backend tests</span></div>
-            <div class="stat-cell"><span class="stat-value">v3</span><span class="stat-label">JSONL protocol</span></div>
-          </div>
+          <div class="hero-kicker"><span>LOCAL-FIRST PROGRAMMING AGENT</span><span>ARCHITECTURE PASS / 2026.09</span></div>
+          <h1>不是聊天框。<br /><em>是一台可恢复的执行机。</em></h1>
+          <p class="hero-lede">SEECODER 将自然语言任务转换为可审计的本地执行闭环：<strong>接收目标 → 管理上下文 → 请求模型 → 解析意图 → 校验工具 → 执行并回填 → 验证或停止</strong>。模型提出下一步，程序掌握权限、事实和终止权。</p>
+          <div class="hero-actions"><a class="button button-primary" href="#lifecycle">从一轮任务开始 <span>↓</span></a><a class="button button-quiet" href="#source-map">跳到源码入口 <span>↗</span></a></div>
+          <div class="stat-strip" aria-label="工程指标"><div class="stat-cell"><span class="stat-value">1</span><span class="stat-label">state machine</span></div><div class="stat-cell"><span class="stat-value">21</span><span class="stat-label">local tools</span></div><div class="stat-cell"><span class="stat-value">10,000</span><span class="stat-label">max model steps</span></div><div class="stat-cell"><span class="stat-value">v3</span><span class="stat-label">snapshot / JSONL</span></div></div>
+          <div class="hero-note"><span class="note-mark">↳</span><div><strong>阅读方法</strong><p>绿色表示已经落在代码里的能力；琥珀色表示运行时的边界；灰色内容是仍需外部环境或后续建设的部分。</p></div></div>
         </section>
 
-        <section class="section contract-section" id="loop" data-observe="loop">
-          <div class="section-heading">
-            <div><span class="section-index">02 / RUNTIME LOOP</span><h2>模型不执行动作。<br /><em>本地内核执行动作。</em></h2></div>
-            <p>程序拥有事实、权限和终止权；模型只负责根据现有证据提出下一步。用户可以在关键变更前介入。</p>
+        <section class="section architecture-section" id="architecture" data-observe="architecture">
+          <div class="section-heading"><div><span class="section-index">02 / LAYERS</span><h2>四层结构，<br /><em>一个控制平面。</em></h2></div><p>展示层不执行工具，模型不越过策略层。所有动作都经过本地 Runner 的同一条控制路径。</p></div>
+          <div class="layer-stack">
+            <article class="layer-row layer-surface"><span class="layer-no">LAYER 01</span><div><code>desktop/swiftui · desktop/electron</code><h3>交互与审阅面</h3><p>接收用户任务，显示消息、折叠推理、运行轨迹、审批卡片和文件 diff；只消费事件，不直接修改工作区。</p></div><b>VIEW</b></article>
+            <article class="layer-row layer-protocol"><span class="layer-no">LAYER 02</span><div><code>cli.py · JSONL protocol v3</code><h3>事件与会话桥</h3><p>以 session_id、run_id、sequence 传递有序事件，让桌面端可以断线重连、区分轮次并恢复状态。</p></div><b>EVENT</b></article>
+            <article class="layer-row layer-core"><span class="layer-no">LAYER 03</span><div><code>runner.py · session.py · context.py</code><h3>AgentRunner 控制平面</h3><p>维护历史、上下文预算、工具策略、审批、取消、超时、错误阈值和唯一终态，是整个 Agent 的状态机。</p></div><b>CONTROL</b></article>
+            <article class="layer-row layer-local"><span class="layer-no">LAYER 04</span><div><code>tools/ · changesets.py · trace.py</code><h3>本地能力与证据层</h3><p>文件、搜索、命令、Git 和子代理都通过注册表执行；工作区边界、变更基线和脱敏 trace 在这里落地。</p></div><b>ACT</b></article>
           </div>
-
-          <div class="loop-rail" aria-label="Agent 运行闭环">
-            <article class="loop-node node-user"><span class="node-number">01</span><span class="node-icon">◎</span><h3>USER TASK</h3><p>目标、工作区、模式</p></article>
-            <div class="rail-arrow">→</div>
-            <article class="loop-node node-context"><span class="node-number">02</span><span class="node-icon">◌</span><h3>CONTEXT</h3><p>历史、记忆、预算</p></article>
-            <div class="rail-arrow">→</div>
-            <article class="loop-node node-model"><span class="node-number">03</span><span class="node-icon">✦</span><h3>MODEL</h3><p>文本 / tool_call</p></article>
-            <div class="rail-arrow">→</div>
-            <article class="loop-node node-policy"><span class="node-number">04</span><span class="node-icon">⊙</span><h3>POLICY</h3><p>参数、权限、并发</p></article>
-            <div class="rail-arrow">→</div>
-            <article class="loop-node node-local"><span class="node-number">05</span><span class="node-icon">▣</span><h3>LOCAL TOOLS</h3><p>文件、命令、Git</p></article>
-          </div>
-
-          <div class="loop-return"><span>真实结果回到上下文</span><b>↺</b><span>继续下一轮，或写入唯一终态</span></div>
-
-          <div class="explain-grid">
-            <div class="explain-card"><span class="card-tag cyan">MODEL</span><h3>建议下一步</h3><p>普通 OpenAI-compatible 客户端只负责传递消息、原生 tool calling、reasoning 和 usage。</p></div>
-            <div class="explain-card"><span class="card-tag amber">PROGRAM</span><h3>保留控制权</h3><p>AgentRunner 维护历史、步数、审批、取消、超时、错误上限和可解释终止状态。</p></div>
-            <div class="explain-card"><span class="card-tag green">USER</span><h3>决定边界</h3><p>Ask / Plan / Auto 把监督和效率的取舍显式放到本地策略里，而不是藏在提示词中。</p></div>
-          </div>
+          <div class="architecture-callout"><span>INVARIANT</span><strong>任何模型输出都不会直接变成副作用。</strong><p>它必须先变成结构化 tool_call，再经过参数校验、策略判断和 WorkspaceBoundary，最后才有机会触达本地文件或进程。</p></div>
         </section>
 
-        <section class="section modules-section" id="modules" data-observe="modules">
-          <div class="section-heading compact-heading">
-            <div><span class="section-index">03 / ARCHITECTURE</span><h2>一条链，六个责任面。</h2></div>
-            <p>每个模块都对应一个可阅读、可测试、可追踪的边界。UI 只消费事件，不拥有执行内核。</p>
+        <section class="section lifecycle-section" id="lifecycle" data-observe="lifecycle">
+          <div class="section-heading"><div><span class="section-index">03 / LIFECYCLE</span><h2>一轮任务的<br /><em>七个检查点。</em></h2></div><p>下面不是概念图，而是 Runner 在一次 send / start 中反复执行的真实责任顺序。</p></div>
+          <div class="lifecycle-grid">
+            <article class="phase phase-active"><span class="phase-no">01</span><span class="phase-icon">◎</span><h3>INTAKE</h3><p>校验非空任务，确定 workspace 与 Ask / Plan / Auto 模式。</p><details><summary>输入与输出</summary><code>user text → ChatMessage(user)</code></details></article>
+            <article class="phase"><span class="phase-no">02</span><span class="phase-icon">◌</span><h3>CONTEXT</h3><p>保留 system、任务身份和最近完整 turn，计算可用预算。</p><details><summary>输入与输出</summary><code>messages[] → prepared context</code></details></article>
+            <article class="phase"><span class="phase-no">03</span><span class="phase-icon">✦</span><h3>REQUEST</h3><p>ModelClient 发出 OpenAI-compatible 请求并消费流式 delta。</p><details><summary>输入与输出</summary><code>messages + schemas → stream</code></details></article>
+            <article class="phase"><span class="phase-no">04</span><span class="phase-icon">⌁</span><h3>PARSE</h3><p>把文本、reasoning、tool_calls 和 usage 组装成统一响应。</p><details><summary>输入与输出</summary><code>delta chunks → ModelResponse</code></details></article>
+            <article class="phase"><span class="phase-no">05</span><span class="phase-icon">⊙</span><h3>POLICY</h3><p>按 capability 与模式判断审批、提案、并行或串行。</p><details><summary>输入与输出</summary><code>tool_call → allowed / pending</code></details></article>
+            <article class="phase"><span class="phase-no">06</span><span class="phase-icon">▣</span><h3>EXECUTE</h3><p>本地工具在边界内执行，结果以 tool message 回填历史。</p><details><summary>输入与输出</summary><code>validated args → ToolResult</code></details></article>
+            <article class="phase phase-terminal"><span class="phase-no">07</span><span class="phase-icon">■</span><h3>VERIFY / STOP</h3><p>无 tool call 则 final；否则继续，或写入明确 RunState。</p><details><summary>唯一终态</summary><code>FINAL · CANCELLED · STOP_*</code></details></article>
           </div>
-          <div class="module-grid">
-            <article class="module-card module-wide"><div class="module-top"><span class="module-id">CORE / 01</span><span class="module-status done">IMPLEMENTED</span></div><code>runner.py</code><h3>AgentRunner · 状态机主循环</h3><p>串起模型请求、工具分发、只读并行、变更串行、审批、流式事件和停止条件。</p><div class="module-foot"><span>FINAL</span><span>STOP_MAX_STEPS</span><span>CANCELLED</span></div></article>
-            <article class="module-card"><div class="module-top"><span class="module-id">ADAPTER / 02</span><span class="module-status done">IMPLEMENTED</span></div><code>model_client.py</code><h3>协议适配</h3><p>解析 tool_calls、reasoning_content、stream delta 与 usage；保留 provider 解耦。</p><div class="file-link">OpenAI-compatible ↗</div></article>
-            <article class="module-card"><div class="module-top"><span class="module-id">STATE / 03</span><span class="module-status done">IMPLEMENTED</span></div><code>session.py</code><h3>会话与快照</h3><p>Conversation 持久化消息、模式、usage、步数和未完成审批，快照 v3 可恢复。</p><div class="file-link">SNAPSHOT_VERSION = 3</div></article>
-            <article class="module-card module-accent"><div class="module-top"><span class="module-id">BOUNDARY / 04</span><span class="module-status done">IMPLEMENTED</span></div><code>tools/</code><h3>本地能力层</h3><p>工具 schema、JSON 校验、工作区边界和结构化错误都在项目内实现。</p><div class="tool-pills"><span>files</span><span>git</span><span>shell</span><span>search</span><span>subagent</span></div></article>
-            <article class="module-card"><div class="module-top"><span class="module-id">OBSERVE / 05</span><span class="module-status done">IMPLEMENTED</span></div><code>trace.py</code><h3>可观测性</h3><p>append-only JSONL trace，敏感 key 和已知 secret 值双重脱敏。</p><div class="file-link">AUDITABLE BY DEFAULT</div></article>
-            <article class="module-card module-wide"><div class="module-top"><span class="module-id">SURFACE / 06</span><span class="module-status done">IMPLEMENTED</span></div><code>desktop/swiftui/</code><h3>原生展示层</h3><p>SwiftUI 连接持续运行的本地 chat 进程，展示会话、流式消息、工具轨迹、审批、环境和 diff 审阅。Electron 是兼容展示层。</p><div class="surface-line"><span>Renderer</span><b>→</b><span>JSONL v3</span><b>→</b><span>AgentRunner</span></div></article>
-          </div>
+          <div class="loop-line"><span>tool result 回到 CONTEXT</span><b>↺</b><span>直到任务完成、被取消或触发安全终止条件</span></div>
         </section>
 
-        <section class="section logic-section" id="logic" data-observe="logic">
-          <div class="section-heading">
-            <div><span class="section-index">04 / CORE LOGIC</span><h2>关键逻辑不是黑盒。<br /><em>每一步都有责任人。</em></h2></div>
-            <p>下面按一次任务的真实执行顺序，解释核心逻辑如何由本项目自行编写并连接起来。</p>
+        <section class="section context-section" id="context" data-observe="context">
+          <div class="section-heading"><div><span class="section-index">04 / STATE</span><h2>历史不是文本。<br /><em>历史是可恢复状态。</em></h2></div><p>Conversation 负责“记住发生过什么”，ContextManager 负责“本轮安全地带什么给模型”。两者不混为一个字符串。</p></div>
+          <div class="context-layout">
+            <div class="context-panel context-history"><div class="panel-label">CONVERSATION / APPEND</div><div class="message-lane"><span class="lane-role system">SYSTEM</span><p>工具契约、语言规则和工作区边界</p></div><div class="message-lane"><span class="lane-role user">USER</span><p>“修复登录页并运行测试”</p></div><div class="message-lane"><span class="lane-role assistant">ASSISTANT</span><p>tool_call: read_file → tool result</p></div><div class="message-lane"><span class="lane-role user">USER</span><p>“再补一个回归测试”</p></div><div class="message-lane"><span class="lane-role assistant">ASSISTANT</span><p>下一轮继续复用同一条消息链</p></div><div class="panel-foot">roles: system · user · assistant · tool</div></div>
+            <div class="context-panel context-budget"><div class="panel-label">CONTEXT MANAGER / FIT</div><div class="budget-meter"><span style="width:72%"></span></div><div class="budget-meta"><span>estimated chars</span><strong>72% / limit</strong></div><ol><li>固定保留 system 与当前任务。</li><li>从最近回合向前选择完整 turn。</li><li>assistant tool_call 与 tool result 不拆开。</li><li>普通模式可压缩旧文本；thinking 模式拒绝危险裁剪。</li></ol><div class="panel-foot">ContextBudgetExceeded = hard failure</div></div>
+            <div class="context-panel context-snapshot"><div class="panel-label">SNAPSHOT / VERSION 3</div><pre><code>{
+  "mode": "auto",
+  "steps": 42,
+  "messages": [...],
+  "pending_approval": [...],
+  "task_plan": {...}
+}</code></pre><p>save() 先写同目录临时文件，flush + fsync 后原子替换；加载时严格校验字段、角色和 tool-call JSON。</p><div class="panel-foot">resume without replaying completed work</div></div>
           </div>
-          <div class="logic-flow" aria-label="核心逻辑执行链">
-            <span>MESSAGE HISTORY</span><b>→</b><span>CONTEXT BUDGET</span><b>→</b><span>MODEL RESPONSE</span><b>→</b><span>TOOL POLICY</span><b>→</b><span>LOCAL RESULT</span><b>↺</b>
-          </div>
-          <div class="logic-grid">
-            <article class="logic-card logic-card-wide">
-              <div class="logic-card-top"><span class="logic-no">01 / STATE</span><span class="module-status done">IMPLEMENTED</span></div>
-              <code>session.py · context.py</code><h3>对话历史与上下文管理</h3>
-              <p>Conversation 维护一条 provider-neutral 的消息列表。每次 send 都追加 user 消息，Runner 再追加 assistant 的文本或 tool call，以及对应的 tool result；因此下一轮看到的是完整因果链，而不是一段拼接后的摘要。保存时写入版本、模式、workspace、usage、步数、TaskPlan 和 pending approval，并先写临时文件、fsync 后原子替换。ContextManager 估算字符预算，固定保留 system 与当前任务，从最近回合向前选择完整 turn；工具调用和结果不会被拆开。普通模式可压缩旧历史，thinking 模式在无法完整保留时直接报告预算错误。</p>
-              <div class="logic-detail"><span>INPUT</span><b>messages[] + budget</b><span>OUTPUT</span><b>safe provider context</b></div>
-            </article>
-            <article class="logic-card">
-              <div class="logic-card-top"><span class="logic-no">02 / CONTRACT</span><span class="module-status done">IMPLEMENTED</span></div>
-              <code>tools/base.py · approval.py</code><h3>工具定义与本地执行</h3>
-              <p>每个工具声明 name、description、JSON Schema 和 capability。ToolRegistry 先检查工具是否存在，再解析 JSON、校验 required/type/range，最后调用 execute。只读工具可并行，变更工具串行执行；Ask、Plan、Auto 由 Policy 决定批准、提案或执行。</p>
-              <div class="logic-detail"><span>MODEL</span><b>schema tool_call</b><span>PROGRAM</span><b>validated ToolResult</b></div>
-            </article>
-            <article class="logic-card">
-              <div class="logic-card-top"><span class="logic-no">03 / ADAPTER</span><span class="module-status done">IMPLEMENTED</span></div>
-              <code>model_client.py</code><h3>模型输出解析</h3>
-              <p>ModelClient 把本地消息转换成 OpenAI-compatible 请求。流式响应分别接收 content、reasoning 和 tool-call delta，并按 index 累积工具名称及 arguments，收到 done 后组装统一 ModelResponse。流式已经输出后不重放，避免 UI 重复；尚未输出时才进行有限重试。</p>
-              <div class="logic-detail"><span>STREAM</span><b>delta → assembled</b><span>ERROR</span><b>partial_text</b></div>
-            </article>
-            <article class="logic-card">
-              <div class="logic-card-top"><span class="logic-no">04 / CONTROL</span><span class="module-status done">IMPLEMENTED</span></div>
-              <code>runner.py</code><h3>循环与终止条件</h3>
-              <p>Runner 每轮先检查 CancellationToken、整轮 deadline 和上下文预算，再请求模型。无 tool call 即写入 final；否则分发工具并把结果追加回消息，继续下一轮。max steps、6 小时 task timeout、连续或重复工具错误、context budget、model/protocol failure 和 Ctrl+C 都映射为明确 RunState。</p>
-              <div class="logic-detail"><span>CONTINUE</span><b>tool result</b><span>TERMINAL</span><b>RunState</b></div>
-            </article>
-            <article class="logic-card logic-card-wide">
-              <div class="logic-card-top"><span class="logic-no">05 / RECOVERY</span><span class="module-status done">IMPLEMENTED</span></div>
-              <code>changesets.py · trace.py · cli.py</code><h3>错误处理、事件与证据</h3>
-              <p>工具异常不会直接击穿主循环，而是归一化为带 kind/message/data 的 ToolResult，交给模型决定修正路径；同一失败调用重复出现或连续错误达到阈值时才停止。每轮事件以 JSONL 输出，带 session_id、run_id、sequence，桌面端据此更新运行面板。ChangeSet 在变更前保存基线、变更后保存 SHA-256，TraceWriter 追加脱敏审计记录；因此失败后仍能恢复会话、继续任务或在未发生冲突时回滚。</p>
-              <div class="logic-detail"><span>OBSERVE</span><b>events + trace</b><span>RECOVER</span><b>resume / rollback</b></div>
-            </article>
-          </div>
+          <div class="logic-explain"><span class="explain-index">WHY</span><p>这样设计解决了多轮会话最容易出现的三个问题：第二轮丢失第一轮工具结果、上下文裁剪破坏原生 tool-calling 协议、进程中断留下半个 JSON 快照。</p><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/session.py" target="_blank" rel="noreferrer">查看 session.py ↗</a></div>
+        </section>
+
+        <section class="section tools-section" id="tools" data-observe="tools">
+          <div class="section-heading"><div><span class="section-index">05 / CAPABILITIES</span><h2>工具先声明，<br /><em>再允许执行。</em></h2></div><p>ToolRegistry 把模型的函数调用转换为本地能力，但每一层都可以拒绝不合法或越界的请求。</p></div>
+          <div class="tools-layout"><div class="tool-contract"><div class="panel-label">TOOL CONTRACT</div><pre><code>Tool {
+  name: string
+  description: string
+  parameters: JSONSchema
+  capability: "read" | "write"
+  execute(args) → ToolResult
+}</code></pre><div class="contract-steps"><span><b>01</b> registry lookup</span><span><b>02</b> JSON decode</span><span><b>03</b> schema validate</span><span><b>04</b> execute / normalize</span></div></div><div class="tool-matrix"><div class="panel-label">EXECUTION MATRIX</div><div class="matrix-row matrix-head"><span>能力</span><span>例子</span><span>调度</span><span>副作用</span></div><div class="matrix-row"><span class="matrix-tag read">READ</span><span>list / read / search</span><span>可并行</span><span>无写入</span></div><div class="matrix-row"><span class="matrix-tag write">WRITE</span><span>write / patch / delete</span><span>串行</span><span>需策略</span></div><div class="matrix-row"><span class="matrix-tag command">COMMAND</span><span>run_command</span><span>受限 argv</span><span>宿主边界</span></div><div class="matrix-row"><span class="matrix-tag git">GIT</span><span>status / diff / log</span><span>工作区内</span><span>证据读取</span></div></div></div>
+          <div class="boundary-strip"><div><span class="strip-mark">PATH</span><strong>WorkspaceBoundary</strong><p>规范化路径、解析已有符号链接，拒绝 workspace 外部目标。</p></div><div><span class="strip-mark">ARGS</span><strong>小型 JSON Schema</strong><p>required、类型、枚举、长度和数值上下限由项目内验证。</p></div><div><span class="strip-mark">RESULT</span><strong>结构化错误</strong><p>UnknownTool、InvalidArguments、FilesystemError 等不会击穿主循环。</p></div></div>
+        </section>
+
+        <section class="section model-section" id="model" data-observe="model">
+          <div class="section-heading"><div><span class="section-index">06 / ADAPTER</span><h2>模型输出先被<br /><em>还原成协议对象。</em></h2></div><p>ModelClient 不把 provider 的私有格式泄漏给 Runner；流式和非流式最终都归一到同一个 ModelResponse。</p></div>
+          <div class="parser-rail"><div class="parser-node"><span>01</span><strong>request</strong><small>messages + tool schemas</small></div><b>→</b><div class="parser-node parser-focus"><span>02</span><strong>stream delta</strong><small>content / reasoning / calls</small></div><b>→</b><div class="parser-node"><span>03</span><strong>aggregate</strong><small>call index + arguments</small></div><b>→</b><div class="parser-node"><span>04</span><strong>response</strong><small>ModelResponse</small></div></div>
+          <div class="parser-grid"><article><span class="card-tag cyan">TEXT</span><h3>内容流</h3><p>content delta 只更新用户可见回答；桌面端按事件增量渲染，不把每个 token 拼成一大段重新发送。</p></article><article><span class="card-tag purple">REASONING</span><h3>思考流</h3><p>reasoning_delta 作为内部事件保留，默认不进入主对话气泡；需要展示时以折叠摘要呈现，避免泄漏 scratchpad。</p></article><article><span class="card-tag amber">TOOL CALL</span><h3>调用聚合</h3><p>按 provider 给出的 index 聚合函数名和 arguments；done 后才生成完整 ToolCall，参数不完整就进入协议错误路径。</p></article><article><span class="card-tag green">RETRY</span><h3>有限重试</h3><p>请求在尚未产生可见输出时才重试；部分流已经交付后不重放，避免重复文本或重复执行。</p></article></div>
+        </section>
+
+        <section class="section control-section" id="control" data-observe="control">
+          <div class="section-heading"><div><span class="section-index">07 / CONTROL</span><h2>继续还是停止，<br /><em>由程序决定。</em></h2></div><p>Runner 的循环不是“让模型一直说”，而是每轮在多个安全检查点上做确定性判断。</p></div>
+          <div class="control-layout"><div class="state-machine"><div class="state-title"><span>AGENTRUNNER / STATE MACHINE</span><span class="live-dot"><i></i> deterministic gates</span></div><div class="state-path"><span class="state-box start">START</span><b>→</b><span class="state-box">CHECK<br /><small>cancel / deadline / budget</small></span><b>→</b><span class="state-box">MODEL_REQUEST</span><b>→</b><span class="state-box">DISPATCH<br /><small>tool policy</small></span><b>↺</b><span class="state-box final">FINAL</span></div><div class="state-path state-stop"><span>任何节点</span><b>→</b><span class="state-box stop">STOP_*</span><small>唯一终态，携带原因和已完成证据</small></div></div><div class="stop-table"><div class="panel-label">TERMINAL STATES</div><div class="stop-row"><code>FINAL</code><span>模型没有 tool_call，写入最终答复</span></div><div class="stop-row"><code>STOP_MAX_STEPS</code><span>达到配置上限；状态可继续</span></div><div class="stop-row"><code>STOP_TASK_TIMEOUT</code><span>整轮 deadline 到期，保留已完成变更</span></div><div class="stop-row"><code>STOP_TOOL_ERROR_LIMIT</code><span>连续或重复失败超过阈值</span></div><div class="stop-row"><code>STOP_CONTEXT_BUDGET</code><span>协议所需历史无法安全压缩</span></div><div class="stop-row"><code>CANCELLED</code><span>用户取消或 Ctrl+C</span></div></div></div>
+          <div class="control-rule"><span>LOOP INVARIANT</span><p>工具结果回填消息后才允许下一次模型请求；没有结果，就没有下一轮。这样每一次继续都有事实依据。</p></div>
+        </section>
+
+        <section class="section recovery-section" id="recovery" data-observe="recovery">
+          <div class="section-heading"><div><span class="section-index">08 / RECOVERY</span><h2>失败不是黑屏。<br /><em>失败也是一种状态。</em></h2></div><p>错误被分层处理：能修正的交给模型，不能安全继续的交给终止状态，能恢复的留下快照和变更证据。</p></div>
+          <div class="recovery-grid"><article class="recovery-card"><span class="recovery-no">01 / TOOL</span><h3>局部失败</h3><p>工具捕获输入、文件系统和未知异常，统一返回 <code>ToolResult.failure(kind, message)</code>，模型可以据此改参数或换路径。</p><span class="recovery-arrow">→ model can repair</span></article><article class="recovery-card"><span class="recovery-no">02 / RUNNER</span><h3>连续失败</h3><p>按工具调用签名记录重复失败；连续错误达到配置阈值时停止，避免在同一个坏参数上无限循环。</p><span class="recovery-arrow">→ STOP_TOOL_ERROR_LIMIT</span></article><article class="recovery-card"><span class="recovery-no">03 / CHANGESET</span><h3>变更保护</h3><p>变更前记录文件基线，变更后计算 SHA-256；无冲突时可以 guarded rollback，有外部修改则拒绝覆盖。</p><span class="recovery-arrow">→ review / rollback</span></article><article class="recovery-card"><span class="recovery-no">04 / SESSION</span><h3>进程恢复</h3><p>JSON snapshot 保存 pending approval、TaskPlan、steps 和 messages；重新载入后从未完成边界继续，不重放已完成调用。</p><span class="recovery-arrow">→ resume</span></article></div>
+        </section>
+
+        <section class="section events-section" id="events" data-observe="events">
+          <div class="section-heading"><div><span class="section-index">09 / OBSERVABILITY</span><h2>主对话讲结果，<br /><em>运行面板讲过程。</em></h2></div><p>详细轨迹通过 JSONL 事件流送入右侧运行面板；主会话只保留阶段性、可读的工作摘要。</p></div>
+          <div class="events-layout"><div class="event-feed"><div class="feed-head"><span>RUN / 7F2A</span><span>SEQUENCE ORDERED</span></div><div class="event-item"><i class="event-dot blue"></i><div><strong>MODEL_REQUEST</strong><p>根据当前上下文请求下一步</p></div><time>09:41:02</time></div><div class="event-item"><i class="event-dot amber"></i><div><strong>TOOL_STARTED</strong><p>read_file · backend/runner.py</p></div><time>09:41:03</time></div><div class="event-item"><i class="event-dot green"></i><div><strong>TOOL_FINISHED</strong><p>241 行 · sha evidence attached</p></div><time>09:41:03</time></div><div class="event-item"><i class="event-dot purple"></i><div><strong>REASONING</strong><p><details><summary>已折叠的内部阶段说明</summary><span>保留给运行记录，不进入主会话气泡。</span></details></p></div><time>09:41:04</time></div><div class="event-item"><i class="event-dot green"></i><div><strong>CHANGESET_RECORDED</strong><p>runner.py · +18 -4</p></div><time>09:41:07</time></div></div><div class="event-schema"><div class="panel-label">EVENT ENVELOPE / JSONL</div><pre><code>{
+  "type": "tool_finished",
+  "session_id": "…",
+  "run_id": "…",
+  "sequence": 18,
+  "data": {"path": "…"}
+}</code></pre><div class="surface-compare"><div><span>MAIN CHAT</span><strong>工作摘要</strong><p>“已读取 runner.py，下一步补测试。”</p></div><div><span>RUN PANEL</span><strong>可审计轨迹</strong><p>每个工具、参数、结果、错误和 diff</p></div></div></div></div>
         </section>
 
         <section class="section evidence-section" id="evidence" data-observe="evidence">
-          <div class="section-heading">
-            <div><span class="section-index">05 / EVIDENCE</span><h2>能运行，不等于已证明。<br /><em>这里放证据。</em></h2></div>
-            <p>页面只把仓库和验证记录里能复核的内容标成已完成；真实模型、网络搜索和宿主命令仍受本机配置影响。</p>
-          </div>
-          <div class="evidence-board">
-            <div class="evidence-main">
-              <div class="evidence-head"><span>OFFLINE REGRESSION</span><strong>GREEN</strong></div>
-              <div class="big-number">101<span>/101</span></div>
-              <p>Python backend tests passed</p>
-              <div class="test-bars"><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i><i style="--w:100%"></i></div>
-              <code>uv run python -m unittest discover -s tests -v</code>
-            </div>
-            <div class="evidence-list">
-              <div class="evidence-row"><span class="evidence-icon green">✓</span><div><strong>Electron boundary</strong><p>11 tests · event parser / argv boundary / duplicate safety</p></div><span class="evidence-pill">PASS</span></div>
-              <div class="evidence-row"><span class="evidence-icon green">✓</span><div><strong>Tk compatibility</strong><p>3 tests · local state / backend command / event contract</p></div><span class="evidence-pill">PASS</span></div>
-              <div class="evidence-row"><span class="evidence-icon cyan">⌘</span><div><strong>SwiftUI native surface</strong><p>macOS source parser check passed; full build requires matching Xcode SDK</p></div><span class="evidence-pill info">CHECK</span></div>
-              <div class="evidence-row"><span class="evidence-icon amber">!</span><div><strong>Live provider runs</strong><p>Not equivalent to offline evidence; API, network and host state are external</p></div><span class="evidence-pill warn">BOUNDARY</span></div>
-            </div>
-          </div>
-          <div class="evidence-note"><span>READ THE LOGIC</span><p>测试覆盖的是协议、边界、状态和错误语义；它不是对任意模型任务成功率的承诺。</p><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/docs/delivery-audit-2026-08-28.md" target="_blank" rel="noreferrer">打开交付审计 ↗</a></div>
+          <div class="section-heading"><div><span class="section-index">10 / EVIDENCE</span><h2>能力要有证据，<br /><em>边界也要有证据。</em></h2></div><p>这里区分离线回归、语法检查和依赖宿主环境的运行；不把“代码存在”写成“任意任务都成功”。</p></div>
+          <div class="evidence-board"><div class="evidence-main"><div class="evidence-head"><span>OFFLINE REGRESSION</span><strong>GREEN</strong></div><div class="big-number">101<span>/101</span></div><p>Python backend tests passed</p><div class="test-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><code>uv run python -m unittest discover -s tests -v</code></div><div class="evidence-list"><div class="evidence-row"><span class="evidence-icon green">✓</span><div><strong>Conversation / context</strong><p>快照 v3、预算裁剪、tool turn 完整性</p></div><span class="evidence-pill">PASS</span></div><div class="evidence-row"><span class="evidence-icon green">✓</span><div><strong>Tool boundary</strong><p>JSON Schema、路径边界、错误归一化</p></div><span class="evidence-pill">PASS</span></div><div class="evidence-row"><span class="evidence-icon cyan">⌁</span><div><strong>Desktop protocol</strong><p>Electron 11 项；Swift 源码解析检查</p></div><span class="evidence-pill info">CHECK</span></div><div class="evidence-row"><span class="evidence-icon amber">!</span><div><strong>Live provider</strong><p>API、网络、Xcode 和宿主命令仍是外部条件</p></div><span class="evidence-pill warn">BOUNDARY</span></div></div></div>
+          <div class="evidence-note"><span>CLAIM DISCIPLINE</span><p>测试证明协议和边界语义；真实模型任务的成功率必须另行记录输入、provider、日志和独立验证结果。</p><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/docs/delivery-audit-2026-08-28.md" target="_blank" rel="noreferrer">打开交付审计 ↗</a></div>
         </section>
 
         <section class="section guardrails-section" id="guardrails" data-observe="guardrails">
-          <div class="section-heading compact-heading">
-            <div><span class="section-index">06 / BOUNDARIES</span><h2>把风险写进结构，而不是写进愿望。</h2></div>
-            <p>这些限制不是营销词。它们是工具层、策略层和运行时的实际约束。</p>
-          </div>
-          <div class="guardrail-grid">
-            <article><span class="guardrail-no">01</span><code>WorkspaceBoundary</code><h3>路径先过边界</h3><p>规范化绝对路径并解析符号链接，拒绝越出当前 workspace、敏感文件和受保护目标。</p></article>
-            <article><span class="guardrail-no">02</span><code>Policy / Mode</code><h3>变更需要策略</h3><p>Ask 在写入或命令前等待批准；Plan 只读并生成计划；Auto 仍受本地工具策略约束。</p></article>
-            <article><span class="guardrail-no">03</span><code>restricted argv</code><h3>命令不默认拼 shell</h3><p>常见验证命令走字面 argv、超时、进程组终止和敏感环境剥离。</p></article>
-            <article><span class="guardrail-no">04</span><code>TraceWriter</code><h3>事实留下轨迹</h3><p>事件和 trace 分开表达模型建议、本地结果、错误和终态，并对凭据做脱敏。</p></article>
-          </div>
-          <div class="boundary-callout"><span class="callout-mark">!</span><div><strong>明确限制：run_command 不是 OS 级沙箱。</strong><p>工作区边界、黑名单和超时能降低风险，但不能阻止熟悉 shell 的命令访问主机外部资源。演示和真实运行应使用不含凭据的隔离 workspace。</p></div></div>
+          <div class="section-heading compact-heading"><div><span class="section-index">11 / BOUNDARIES</span><h2>安全边界不是一句话，<br /><em>是每个调用点。</em></h2></div><p>这些是当前实现的真实约束，同时也是演示和后续隔离建设必须明确的边界。</p></div>
+          <div class="guardrail-grid"><article><span class="guardrail-no">01</span><code>WorkspaceBoundary</code><h3>路径拒绝越界</h3><p>相对路径、绝对路径和符号链接都会经过统一解析，只允许落在当前 workspace。</p></article><article><span class="guardrail-no">02</span><code>Policy / Mode</code><h3>写入需要策略</h3><p>Ask 等待批准，Plan 只读提出方案，Auto 也仍然经过 capability 策略。</p></article><article><span class="guardrail-no">03</span><code>run_command</code><h3>受限而非沙箱</h3><p>命令使用字面 argv、超时、进程组终止和环境剥离；它不是 OS 级隔离。</p></article><article><span class="guardrail-no">04</span><code>TraceWriter</code><h3>证据默认脱敏</h3><p>事件与 trace 分开保存，并对敏感 key 和已知 secret 值做脱敏处理。</p></article></div>
+          <div class="boundary-callout"><span class="callout-mark">!</span><div><strong>运行建议</strong><p>演示时使用不含凭据的隔离 workspace；任何 live provider、shell 或 Git 行为都应以运行面板和工作区 diff 为准。</p></div></div>
         </section>
 
-        <section class="section roadmap-section" id="roadmap" data-observe="roadmap">
-          <div class="section-heading">
-            <div><span class="section-index">07 / ROADMAP</span><h2>已完成的能力，<br /><em>与下一轮问题。</em></h2></div>
-            <p>路线图只承认当前代码已经实现和文档已经记录的状态，不把愿望写成结果。</p>
-          </div>
-          <div class="roadmap-list">
-            <div class="roadmap-row"><span class="roadmap-marker complete">✓</span><div class="roadmap-label"><strong>本地 Agent 闭环</strong><p>自研 runner、工具注册、参数校验、错误处理与终止语义</p></div><span class="roadmap-state">SHIPPED</span></div>
-            <div class="roadmap-row"><span class="roadmap-marker complete">✓</span><div class="roadmap-label"><strong>人机协同与可恢复状态</strong><p>Ask / Plan / Auto、流式输出、记忆、压缩、session save/load、ASK 恢复</p></div><span class="roadmap-state">SHIPPED</span></div>
-            <div class="roadmap-row"><span class="roadmap-marker complete">✓</span><div class="roadmap-label"><strong>更聪明的局部协作</strong><p>只读并行、确定性 search_code、有界 spawn_agent、可失败 web_search</p></div><span class="roadmap-state">SHIPPED</span></div>
-            <div class="roadmap-row"><span class="roadmap-marker next">→</span><div class="roadmap-label"><strong>更强执行隔离与自动检查点</strong><p>降低 host shell 风险，完善长任务恢复与更细粒度的变更回滚</p></div><span class="roadmap-state next-state">NEXT</span></div>
-            <div class="roadmap-row"><span class="roadmap-marker next">→</span><div class="roadmap-label"><strong>扩展边界的基础设施</strong><p>插件 / MCP 显式注册、多模型路由、跨平台桌面打包与更多语言分析器</p></div><span class="roadmap-state next-state">LATER</span></div>
-          </div>
-        </section>
-
-        <section class="section source-section" id="source-map" data-observe="source-map">
-          <div class="source-panel">
-            <div class="source-copy"><span class="section-index">08 / SOURCE MAP</span><h2>从这里继续读代码。</h2><p>先读主循环，再读工具边界，最后读桌面事件。页面是导航，不替代源码和测试。</p><a class="button button-primary" href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9" target="_blank" rel="noreferrer">打开 GitHub 仓库 ↗</a></div>
-            <div class="source-tree" aria-label="源码目录树"><div><span>SEECODER/</span></div><div class="tree-indent"><span class="tree-folder">src/seecoder/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/runner.py" target="_blank" rel="noreferrer">└─ runner.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/model_client.py" target="_blank" rel="noreferrer">└─ model_client.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/src/seecoder/tools" target="_blank" rel="noreferrer">└─ tools/</a></div><div class="tree-indent"><span class="tree-folder">desktop/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/desktop/swiftui" target="_blank" rel="noreferrer">└─ swiftui/</a></div><div class="tree-indent"><span class="tree-folder">tests/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/docs" target="_blank" rel="noreferrer">└─ docs/</a></div></div>
-          </div>
-          <div class="footer-line"><span>SEECODER / LOCAL-FIRST / AUDITABLE</span><span>LAST MAP PASS · 2026.09.01</span></div>
-        </section>
+        <section class="section source-section" id="source-map" data-observe="source-map"><div class="source-panel"><div class="source-copy"><span class="section-index">12 / SOURCE MAP</span><h2>从责任面<br /><em>回到真实代码。</em></h2><p>页面是架构导航，不替代源码。建议顺序：主循环 → 会话与上下文 → 工具注册 → 模型适配 → 事件与桌面。</p><a class="button button-primary" href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9" target="_blank" rel="noreferrer">打开 GitHub 仓库 ↗</a></div><div class="source-tree" aria-label="源码目录树"><div><span>SEECODER/</span></div><div class="tree-indent"><span class="tree-folder">src/seecoder/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/runner.py" target="_blank" rel="noreferrer">└─ runner.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/session.py" target="_blank" rel="noreferrer">└─ session.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/context.py" target="_blank" rel="noreferrer">└─ context.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/blob/main/src/seecoder/model_client.py" target="_blank" rel="noreferrer">└─ model_client.py</a></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/src/seecoder/tools" target="_blank" rel="noreferrer">└─ tools/</a></div><div class="tree-indent"><span class="tree-folder">desktop/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/desktop/swiftui" target="_blank" rel="noreferrer">└─ swiftui/</a></div><div class="tree-indent"><span class="tree-folder">tests/</span></div><div class="tree-indent tree-link"><a href="https://github.com/WANGLEVY9/SEECODER_Version_WANGLEVY9/tree/main/tests" target="_blank" rel="noreferrer">└─ tests/</a></div></div></div><div class="footer-line"><span>SEECODER / LOCAL-FIRST / AUDITABLE</span><span>LAST MAP PASS · 2026.09</span></div></section>
       </main>
 
-      <aside class="inspector" aria-label="当前页信息">
-        <div class="inspector-inner">
-          <div class="inspector-title"><span>LIVE INSPECTOR</span><i></i></div>
-          <div class="inspector-card">
-            <span class="tiny-label">CURRENT SCOPE</span>
-            <strong id="currentScope">SYSTEM OVERVIEW</strong>
-            <div class="scope-line"><span>local boundary</span><b>active</b></div>
-            <div class="scope-line"><span>agent frameworks</span><b>none</b></div>
-            <div class="scope-line"><span>remote execution</span><b>none</b></div>
-          </div>
-          <div class="inspector-block"><span class="tiny-label">STATE MODEL</span><div class="state-stack"><span class="state-chip amber">AWAITING_APPROVAL</span><span class="state-chip cyan">MODEL_REQUEST</span><span class="state-chip green">FINAL</span><span class="state-chip ink">CANCELLED</span></div></div>
-          <div class="inspector-block"><span class="tiny-label">CAPABILITY MIX</span><div class="mini-chart"><div><span>Runtime</span><i style="--h:90%"></i><b>90</b></div><div><span>Evidence</span><i style="--h:78%"></i><b>78</b></div><div><span>Surface</span><i style="--h:64%"></i><b>64</b></div><div><span>Isolation</span><i style="--h:38%"></i><b>38</b></div></div></div>
-          <div class="inspector-quote">“不要把代码存在，误写成效果已经证明。”<span>— project rule</span></div>
-          <div class="inspector-toc"><span class="tiny-label">ON THIS PAGE</span><a href="#overview">系统总览</a><a href="#loop">一次任务怎样流动</a><a href="#modules">核心模块与职责</a><a href="#logic">核心逻辑实现</a><a href="#evidence">验证证据</a><a href="#guardrails">安全边界</a><a href="#roadmap">开发路线</a></div>
-        </div>
-      </aside>
+      <aside class="inspector" aria-label="当前页信息"><div class="inspector-inner"><div class="inspector-title"><span>LIVE INSPECTOR</span><i></i></div><div class="inspector-card"><span class="tiny-label">CURRENT SCOPE</span><strong id="currentScope">SYSTEM OVERVIEW</strong><div class="scope-line"><span>local boundary</span><b>active</b></div><div class="scope-line"><span>provider adapter</span><b>isolated</b></div><div class="scope-line"><span>remote execution</span><b>none</b></div></div><div class="inspector-block"><span class="tiny-label">RUN STATES</span><div class="state-stack"><span class="state-chip amber">AWAITING_APPROVAL</span><span class="state-chip cyan">MODEL_REQUEST</span><span class="state-chip green">FINAL</span><span class="state-chip ink">CANCELLED</span></div></div><div class="inspector-block"><span class="tiny-label">CONTROL BUDGET</span><div class="budget-summary"><div><strong>10,000</strong><span>model steps</span></div><div><strong>6h</strong><span>task deadline</span></div><div><strong>4</strong><span>tool errors</span></div></div></div><div class="inspector-quote">“模型提出下一步，程序决定是否允许它发生。”<span>— SEECODER control rule</span></div><div class="inspector-toc"><span class="tiny-label">ON THIS PAGE</span><a href="#overview">系统总览</a><a href="#architecture">分层架构</a><a href="#lifecycle">任务生命周期</a><a href="#context">历史与上下文</a><a href="#tools">工具契约与执行</a><a href="#model">模型输出解析</a><a href="#control">循环与终止</a><a href="#recovery">错误与恢复</a><a href="#events">事件与桌面展示</a><a href="#evidence">验证证据</a><a href="#guardrails">安全边界</a></div></div></aside>
     </div>
-
-    <dialog class="search-dialog" id="searchDialog" aria-label="搜索页面">
-      <form method="dialog"><div class="dialog-head"><span>SEARCH MAP</span><button aria-label="关闭搜索">×</button></div><input id="searchInput" type="search" placeholder="试试 runner、审批、验证…" autocomplete="off" /><div class="search-results" id="searchResults"><p>输入关键词，跳转到对应的工程区域。</p></div></form>
-    </dialog>
+    <dialog class="search-dialog" id="searchDialog" aria-label="搜索页面"><form method="dialog"><div class="dialog-head"><span>SEARCH ARCHITECTURE</span><button aria-label="关闭搜索">×</button></div><input id="searchInput" type="search" placeholder="试试 runner、上下文、tool_call…" autocomplete="off" /><div class="search-results" id="searchResults"><p>输入关键词，跳转到对应的工程区域。</p></div></form></dialog>
     <script src="./app.js"></script>
   </body>
 </html>

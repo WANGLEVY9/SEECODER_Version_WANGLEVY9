@@ -5,12 +5,16 @@ const inspectorLinks = [...document.querySelectorAll('.inspector-toc a')];
 
 const labels = {
   overview: 'SYSTEM OVERVIEW',
-  loop: 'RUNTIME LOOP',
-  modules: 'ARCHITECTURE',
-  logic: 'CORE LOGIC',
+  architecture: 'LAYERS',
+  lifecycle: 'LIFECYCLE',
+  context: 'STATE / CONTEXT',
+  tools: 'CAPABILITIES',
+  model: 'MODEL ADAPTER',
+  control: 'CONTROL',
+  recovery: 'RECOVERY',
+  events: 'OBSERVABILITY',
   evidence: 'EVIDENCE',
   guardrails: 'BOUNDARIES',
-  roadmap: 'ROADMAP',
   'source-map': 'SOURCE MAP',
 };
 
@@ -53,14 +57,18 @@ document.addEventListener('keydown', (event) => {
 });
 
 const searchable = [
-  ['系统总览', '#overview', 'agent · local-first · audit'],
-  ['一次任务怎样流动', '#loop', 'runner · context · model · tools'],
-  ['核心模块与职责', '#modules', 'runner.py · session.py · tools/ · trace.py'],
-  ['核心逻辑实现', '#logic', 'history · context · tool contract · parser · stop states · recovery'],
+  ['系统总览', '#overview', 'agent · local-first · control plane'],
+  ['分层架构', '#architecture', 'surface · protocol · runner · local'],
+  ['任务生命周期', '#lifecycle', 'intake · context · parse · execute · stop'],
+  ['历史与上下文', '#context', 'Conversation · ContextManager · snapshot v3'],
+  ['工具契约与执行', '#tools', 'ToolRegistry · JSON Schema · capability'],
+  ['模型输出解析', '#model', 'stream delta · reasoning · tool call'],
+  ['循环与终止', '#control', 'RunState · timeout · max steps · cancellation'],
+  ['错误与恢复', '#recovery', 'ToolResult · ChangeSet · rollback · resume'],
+  ['事件与桌面展示', '#events', 'JSONL · sequence · run panel · folded reasoning'],
   ['验证证据', '#evidence', '101/101 · regression · offline'],
   ['安全边界', '#guardrails', 'WorkspaceBoundary · Policy · restricted argv'],
-  ['开发路线', '#roadmap', 'shipped · next · isolation · checkpoints'],
-  ['源码入口', '#source-map', 'GitHub · source tree · docs'],
+  ['源码入口', '#source-map', 'GitHub · source tree · tests'],
 ];
 searchInput?.addEventListener('input', (event) => {
   const query = event.target.value.trim().toLowerCase();
